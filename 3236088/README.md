@@ -100,4 +100,5 @@ Colin / Charlotte
 
 = 14 triples
 = 56 triples in total * 2 nationalities = 112
+
 Apparently an error in the paper.
