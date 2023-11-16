@@ -4,6 +4,7 @@
 # Nature, 323(6088), 533–536. https://doi.org/10.1038/323533a0
 
 import math
+import sys
 import random
 import time
 from uuid import uuid4
@@ -558,5 +559,14 @@ def family_trees(sweeps_count=1500):
 
 
 if __name__ == "__main__":
-    # mirror_symmetry()
-    family_trees()
+    try:
+        example = sys.argv[1]
+    except IndexError:
+        example = None
+    if example == "symmetry":
+        mirror_symmetry()
+    elif example == "family":
+        family_trees()
+    else:
+        print("python3 main.py symmetry | family")
+        sys.exit(1)
