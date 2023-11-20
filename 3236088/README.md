@@ -68,7 +68,6 @@ python3 main.py --run check_grads
 
 Please contact me through github or at lyre_embassy_0n@icloud.com if you know the solution or have some idea worth trying. Thank you!
 
-
 Also, number of possible triples in two isomorphic families described in the paper is claimed to be 104. It appears to actually be 112. I've decided to keep using 4 cases for test of generalization while spending remaining 108 cases on training.
 
 Chris, Penelope, Andrew, Christine:
@@ -114,4 +113,5 @@ Colin / Charlotte
 
 = 14 triples
 = 56 triples in total * 2 nationalities = 112
+
 Apparently an error in the paper.

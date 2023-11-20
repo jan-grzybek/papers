@@ -8,7 +8,6 @@ import time
 import random
 import argparse
 from uuid import uuid4
-
 from tqdm import tqdm
 
 global_gradients = {}
