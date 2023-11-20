@@ -4,10 +4,13 @@
 # Nature, 323(6088), 533–536. https://doi.org/10.1038/323533a0
 
 import math
-import sys
-import random
 import time
+import random
+import argparse
 from uuid import uuid4
+from tqdm import tqdm
+
+global_gradients = {}
 
 
 class Op:
@@ -15,10 +18,16 @@ class Op:
         self._cache_uuid = None
         self._cache = None
 
+    def _connect_upper(self, upper_unit):
+        raise NotImplementedError
+
     def output(self, uuid=None):
         raise NotImplementedError
 
-    def backprop(self, derivative=1., uuid=None):
+    def backprop(self, upper_unit, derivative=None, uuid=None):
+        raise NotImplementedError
+
+    def dump_gradients(self, uuid=None):
         raise NotImplementedError
 
     def update(self, eps, alpha, weight_decay=0., uuid=None):
@@ -31,11 +40,17 @@ class Unit(Op):
         self._connected_units = []
         self._accumulated_gradient_weights = []
         self._gradient_descents = []
+        self._upper_units = []
+        self._upper_derivatives = {}
+
+    def _connect_upper(self, upper_unit):
+        self._upper_units.append(upper_unit)
 
     def connect(self, unit, weight: float):
         self._connected_units.append([unit, weight])
         self._accumulated_gradient_weights.append(0.)
         self._gradient_descents.append(0.)
+        unit._connect_upper(self)
         return self
 
     def output(self, uuid=None):
@@ -50,7 +65,15 @@ class Unit(Op):
         self._cache = 1 / (1 + math.e ** -total_input)
         return self._cache
 
-    def backprop(self, derivative=1., uuid=None):
+    def backprop(self, upper_unit, derivative=1., uuid=None):
+        if upper_unit is not None:
+            assert issubclass(type(upper_unit), Op)
+            assert upper_unit not in self._upper_derivatives.keys()
+            self._upper_derivatives[upper_unit] = derivative
+            if len(self._upper_derivatives) == len(self._upper_units):
+                derivative = sum(self._upper_derivatives.values())
+            else:
+                return
         if uuid is None:
             uuid = uuid4()
         out = self.output(uuid)
@@ -58,8 +81,20 @@ class Unit(Op):
         for i, x in enumerate(self._connected_units):
             input_unit, weight = x
             self._accumulated_gradient_weights[i] += local_derivative * input_unit.output(uuid)
-            input_unit.backprop(local_derivative * weight, uuid)
+            input_unit.backprop(self, local_derivative * weight, uuid)
+        self._upper_derivatives = {}
         return out
+
+    def dump_gradients(self, uuid=None):
+        if uuid is None:
+            uuid = uuid4()
+        if uuid != self._cache_uuid:
+            self._cache_uuid = uuid
+            global global_gradients
+            global_gradients[self] = {}
+            for i, (input_unit, _) in enumerate(self._connected_units):
+                global_gradients[self][i] = self._accumulated_gradient_weights[i]
+                input_unit.dump_gradients(uuid)
 
     def update(self, eps, alpha, weight_decay=0., uuid=None):
         if uuid is None:
@@ -81,11 +116,17 @@ class InputUnit(Op):
         super().__init__()
         self.value = value
 
+    def _connect_upper(self, upper_unit):
+        return
+
     def output(self, uuid=None) -> float:
         return self.value
 
-    def backprop(self, derivative=1., uuid=None):
+    def backprop(self, upper_unit, derivative=1., uuid=None):
         return self.value
+
+    def dump_gradients(self, uuid=None):
+        return
 
     def update(self, eps, alpha, weight_decay=0., uuid=None):
         return
@@ -123,7 +164,7 @@ class Error(Op):
         self._cache = e / 2
         return self._cache
 
-    def backprop(self, derivative=1., uuid=None):
+    def backprop(self, upper_unit=None, derivative=None, uuid=None):
         if uuid is None:
             uuid = uuid4()
         for output_unit, reference_fn in self._connected_units:
@@ -131,12 +172,20 @@ class Error(Op):
             ref = reference_fn.output(uuid)
             if self._lower_threshold is not None:
                 if out < self._lower_threshold and ref == 0:
+                    output_unit.backprop(upper_unit, 0, uuid)
                     continue
             if self._upper_threshold is not None:
                 if out > self._upper_threshold and ref == 1:
+                    output_unit.backprop(upper_unit, 0, uuid)
                     continue
-            output_unit.backprop(out - ref, uuid)
+            output_unit.backprop(upper_unit, out - ref, uuid)
         return self.output(uuid)
+
+    def dump_gradients(self, uuid=None):
+        if uuid is None:
+            uuid = uuid4()
+        for output_unit, _ in self._connected_units:
+            output_unit.dump_gradients(uuid)
 
     def update(self, eps, alpha, weight_decay=0., uuid=None):
         if uuid is None:
@@ -526,6 +575,7 @@ def family_trees(sweeps_count=1500):
                 for name, input_unit in relationship_units.items():
                     input_unit.value = int(name == relationship)
                 total_error += e.backprop()
+
         print(f"\nSweep {s + 1}/{sweeps_count}; total error: {total_error}; time: {round(time.time() - start, 2)} sec")
         if s < 20:
             e.update(eps=0.005, alpha=0.5, weight_decay=0.002)
@@ -558,15 +608,97 @@ def family_trees(sweeps_count=1500):
                               f"{[i for i in reversed(sorted_outputs[-3:])]}; least likely: {sorted_outputs[:3]}")
 
 
+def check_gradients():
+    class Dummy(Op):
+        def __init__(self):
+            super().__init__()
+            self.value = random.choice([0, 1])
+
+        def randomize(self):
+            self.value = random.choice([0, 1])
+
+        def output(self, uuid=None):
+            return self.value
+
+    # network
+    input_units_0 = [InputUnit() for _ in range(24)]
+    input_units_1 = [InputUnit() for _ in range(12)]
+    hidden_units_0 = [Unit() for _ in range(6)]
+    for hidden_unit in hidden_units_0:
+        for unit in input_units_0:
+            hidden_unit.connect(unit, random.uniform(-0.3, 0.3))
+    hidden_units_1 = [Unit() for _ in range(6)]
+    for hidden_unit in hidden_units_1:
+        for unit in input_units_1:
+            hidden_unit.connect(unit, random.uniform(-0.3, 0.3))
+    central_layer = [Unit() for _ in range(12)]
+    for hidden_unit_i in central_layer:
+        for hidden_unit_j in hidden_units_0 + hidden_units_1:
+            hidden_unit_i.connect(hidden_unit_j, random.uniform(-0.3, 0.3))
+    penultimate_layer = [Unit() for _ in range(6)]
+    for hidden_unit_i in penultimate_layer:
+        for hidden_unit_j in central_layer:
+            hidden_unit_i.connect(hidden_unit_j, random.uniform(-0.3, 0.3))
+    output_units = [Unit() for _ in range(24)]
+    for unit in output_units:
+        for hidden_unit in penultimate_layer:
+            unit.connect(hidden_unit, random.uniform(-0.3, 0.3))
+
+    references = [Dummy() for _ in range(len(output_units))]
+
+    e = Error(0.2, 0.8)
+    for unit, reference in zip(output_units, references):
+        e.connect(unit, reference)
+
+    epsilon = 1e-4
+    acc_est_grad = {}
+    rounds = 100
+    diffs = []
+    for _ in tqdm(range(1, rounds+1)):
+        for input_unit in input_units_0 + input_units_1:
+            input_unit.value = random.choice([0, 1])
+        for ref in references:
+            ref.randomize()
+
+        e.backprop()
+        e.dump_gradients()
+
+        diffs = []
+        i = 0
+        for unit_i in global_gradients:
+            for unit_j in (input_units_0 + input_units_1 + hidden_units_0 + hidden_units_1 + central_layer +
+                           penultimate_layer + output_units):
+                if unit_i is unit_j:
+                    if unit_i not in acc_est_grad.keys():
+                        acc_est_grad[unit_i] = {}
+                    for weight, grad in global_gradients[unit_i].items():
+                        tmp = unit_i._connected_units[weight][1]
+                        unit_i._connected_units[weight][1] += epsilon
+                        x = e.output()
+                        unit_i._connected_units[weight][1] -= 2 * epsilon
+                        y = e.output()
+                        unit_i._connected_units[weight][1] = tmp
+                        est_grad = (x - y) / (2 * epsilon)
+                        if weight not in acc_est_grad[unit_i].keys():
+                            acc_est_grad[unit_i][weight] = 0.
+                        acc_est_grad[unit_i][weight] += est_grad
+                        diff = abs(grad - acc_est_grad[unit_i][weight])
+                        diffs.append(diff)
+                        assert diff < 1e-8
+                    i += 1
+        assert i == len(global_gradients)
+    print(f"\nDelta on gradients accumulated over {rounds} backward passes:")
+    print(f"  mean: {round(sum(diffs)/len(diffs), 12)}, min: {round(min(diffs), 12)}, max: {round(max(diffs), 12)}")
+    print("\nGradient check successful.")
+
+
 if __name__ == "__main__":
-    try:
-        example = sys.argv[1]
-    except IndexError:
-        example = None
-    if example == "symmetry":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--run', choices=["symmetry", "family", "check_grads"], required=True)
+    args = parser.parse_args()
+    if args.run == "symmetry":
         mirror_symmetry()
-    elif example == "family":
+    elif args.run == "family":
         family_trees()
-    else:
-        print("python3 main.py symmetry | family")
-        sys.exit(1)
+    elif args.run == "check_grads":
+        check_gradients()

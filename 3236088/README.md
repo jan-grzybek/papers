@@ -9,10 +9,24 @@ Attempt at implementing examples provided in the *Learning representations by ba
 ## Detecting mirror symmetry in vectors
 This example works fine with just one caveat - it does not always converge based on the recipe from the paper. Success depends on lucky initialization of weights. It doesn't take much to come across lucky initialization but sometimes it requires few attempts. If it works it works 100%.
 ```
-python3 main.py symmetry
+python3 main.py --run symmetry
+```
+```
+Combination: [1, 1, 1, 1, 0, 0]; output: 0.0019838136354611018 [False]; gt: 0.0 [False]
+Combination: [1, 1, 1, 1, 0, 1]; output: 0.003678117016642193 [False]; gt: 0.0 [False]
+Combination: [1, 1, 1, 1, 1, 0]; output: 0.10623508587475897 [False]; gt: 0.0 [False]
+Combination: [1, 1, 1, 1, 1, 1]; output: 0.8440837457212751 [True]; gt: 1.0 [True]
+
+Precision: 100.0%; recall: 100.0%
 ```
 ## Predicting third term in triples of two isomorphic family trees
+
+![Family trees](families.png)
+
 This example doesn't work as described in the paper(s). Allegedly network should converge to the state where predictions on training set are accurate - ~0.8 values at output units corresponding to the correct third term of a given triple and ~0.2 values at the output units not matching the third term. Also a decent generalization should happen for test cases where output units correct for the given triple should reach values of ~0.5, while the remaining units should stay at ~0.2. This is not happening - instead network learns to mimic distribution of third terms across the whole training set - always returning same values from every output unit no matter the input units' values:
+```
+python3 main.py --run family
+```
 ```
 Sweep 171/1500; total error: 51.411514702972156; time: 2.6 sec
   train predictions [en]:
@@ -47,15 +61,14 @@ These ideas have been tried:
 - adding biases (not mentioned in paper that they are present but tried this nonetheless) - no effect
 - chaning epsilon and alpha parameters, disabling weight decay, disabling [0.2, 0.8] activation cut-off - nothing
 
+Correctness of backpropagation can be tested by running:
 ```
-python3 main.py family
+python3 main.py --run check_grads
 ```
 
 Please contact me through github or at lyre_embassy_0n@icloud.com if you know the solution or have some idea worth trying. Thank you!
 
-Another discrepancy from paper is that number of possible triples in two isomorphic families described appears to be 112 as opposed to claimed 104. I've decided to keep using 4 cases for test of generalization while spending remaining 108 cases on training.
-
-![Family trees](families.png)
+Also, number of possible triples in two isomorphic families described in the paper is claimed to be 104. It appears to actually be 112. I've decided to keep using 4 cases for test of generalization while spending remaining 108 cases on training.
 
 Chris, Penelope, Andrew, Christine:
 - spouse
