@@ -4,10 +4,12 @@
 # Nature, 323(6088), 533–536. https://doi.org/10.1038/323533a0
 
 import math
-import sys
-import random
 import time
+import random
+import argparse
 from uuid import uuid4
+
+global_gradients = {}
 
 
 class Op:
@@ -19,6 +21,9 @@ class Op:
         raise NotImplementedError
 
     def backprop(self, derivative=1., uuid=None):
+        raise NotImplementedError
+
+    def dump_gradients(self, uuid=None):
         raise NotImplementedError
 
     def update(self, eps, alpha, weight_decay=0., uuid=None):
@@ -61,6 +66,17 @@ class Unit(Op):
             input_unit.backprop(local_derivative * weight, uuid)
         return out
 
+    def dump_gradients(self, uuid=None):
+        if uuid is None:
+            uuid = uuid4()
+        if uuid != self._cache_uuid:
+            self._cache_uuid = uuid
+            global global_gradients
+            global_gradients[self] = {}
+            for i, (input_unit, _) in enumerate(self._connected_units):
+                global_gradients[self][i] = self._accumulated_gradient_weights[i]
+                input_unit.dump_gradients(uuid)
+
     def update(self, eps, alpha, weight_decay=0., uuid=None):
         if uuid is None:
             uuid = uuid4()
@@ -86,6 +102,9 @@ class InputUnit(Op):
 
     def backprop(self, derivative=1., uuid=None):
         return self.value
+
+    def dump_gradients(self, uuid=None):
+        return
 
     def update(self, eps, alpha, weight_decay=0., uuid=None):
         return
@@ -137,6 +156,12 @@ class Error(Op):
                     continue
             output_unit.backprop(out - ref, uuid)
         return self.output(uuid)
+
+    def dump_gradients(self, uuid=None):
+        if uuid is None:
+            uuid = uuid4()
+        for output_unit, _ in self._connected_units:
+            output_unit.dump_gradients(uuid)
 
     def update(self, eps, alpha, weight_decay=0., uuid=None):
         if uuid is None:
@@ -526,6 +551,7 @@ def family_trees(sweeps_count=1500):
                 for name, input_unit in relationship_units.items():
                     input_unit.value = int(name == relationship)
                 total_error += e.backprop()
+
         print(f"\nSweep {s + 1}/{sweeps_count}; total error: {total_error}; time: {round(time.time() - start, 2)} sec")
         if s < 20:
             e.update(eps=0.005, alpha=0.5, weight_decay=0.002)
@@ -558,15 +584,74 @@ def family_trees(sweeps_count=1500):
                               f"{[i for i in reversed(sorted_outputs[-3:])]}; least likely: {sorted_outputs[:3]}")
 
 
+def check_gradients():
+    class Dummy(Op):
+        def __init__(self):
+            super().__init__()
+            self.value = random.choice([0, 1])
+
+        def output(self, uuid=None):
+            return self.value
+
+    # network
+    input_units_0 = [InputUnit() for _ in range(24)]
+    input_units_1 = [InputUnit() for _ in range(12)]
+    hidden_units_0 = [Unit() for _ in range(6)]
+    for hidden_unit in hidden_units_0:
+        for unit in input_units_0:
+            hidden_unit.connect(unit, random.uniform(-0.3, 0.3))
+    hidden_units_1 = [Unit() for _ in range(6)]
+    for hidden_unit in hidden_units_1:
+        for unit in input_units_1:
+            hidden_unit.connect(unit, random.uniform(-0.3, 0.3))
+    central_layer = [Unit() for _ in range(12)]
+    for hidden_unit_i in central_layer:
+        for hidden_unit_j in hidden_units_0 + hidden_units_1:
+            hidden_unit_i.connect(hidden_unit_j, random.uniform(-0.3, 0.3))
+    penultimate_layer = [Unit() for _ in range(6)]
+    for hidden_unit_i in penultimate_layer:
+        for hidden_unit_j in central_layer:
+            hidden_unit_i.connect(hidden_unit_j, random.uniform(-0.3, 0.3))
+    output_units = [Unit() for _ in range(24)]
+    for unit in output_units:
+        for hidden_unit in penultimate_layer:
+            unit.connect(hidden_unit, random.uniform(-0.3, 0.3))
+
+    e = Error(0.2, 0.8)
+    for unit, reference in zip(output_units, [Dummy() for _ in range(len(output_units))]):
+        e.connect(unit, reference)
+
+    for input_unit in input_units_0 + input_units_1:
+        input_unit.value = random.choice([0, 1])
+
+    e.backprop()
+    e.dump_gradients()
+
+    epsilon = 1e-4
+    i = 0
+    for unit_i in global_gradients:
+        for unit_j in (input_units_0 + input_units_1 + hidden_units_0 + hidden_units_1 + central_layer +
+                       penultimate_layer + output_units):
+            if unit_i is unit_j:
+                for weight, grad in global_gradients[unit_i].items():
+                    unit_i._connected_units[weight][1] += epsilon
+                    x = e.output()
+                    unit_i._connected_units[weight][1] -= 2 * epsilon
+                    y = e.output()
+                    est_grad = (x - y) / (2 * epsilon)
+                    assert abs(grad - est_grad) < epsilon
+                i += 1
+    assert i == len(global_gradients)
+    print("Gradient check successful")
+
+
 if __name__ == "__main__":
-    try:
-        example = sys.argv[1]
-    except IndexError:
-        example = None
-    if example == "symmetry":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--run', choices=["symmetry", "family", "check_grads"], required=True)
+    args = parser.parse_args()
+    if args.run == "symmetry":
         mirror_symmetry()
-    elif example == "family":
+    elif args.run == "family":
         family_trees()
-    else:
-        print("python3 main.py symmetry | family")
-        sys.exit(1)
+    elif args.run == "check_grads":
+        check_gradients()
