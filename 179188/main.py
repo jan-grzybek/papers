@@ -1,17 +1,7 @@
+# https://sthalles.github.io/fisher-linear-discriminant/
+# https://sas.uwaterloo.ca/~aghodsib/courses/f07stat841/notes/lecture6.pdf
+
 import pandas as pd
-
-
-class Measurement:
-    def __init__(self, llambda=None, value=None):
-        self.llambda = llambda
-        self.value = value
-
-
-class LinearFunction:
-    def __init__(self, n: int):
-        self.measurements = []
-        for _ in range(n):
-            self.measurements.append(Measurement())
 
 
 def main():
