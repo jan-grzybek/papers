@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
 
 // turns out MNIST is big-endian
 // https://stackoverflow.com/questions/8286668/how-to-read-mnist-data-in-c
@@ -25,6 +27,26 @@ void malloc_error() {
     exit(1);
 }
 
+bool is_verbose() {
+    if (getenv("VERBOSE") != NULL) {
+        return strcmp(getenv("VERBOSE"), "1") == 0;
+    } else return false;
+}
+
+void print_maybe(const char *format, ...) {
+    static char verbose = -1;
+    if (verbose == -1) {
+        if (is_verbose()) verbose = 1;
+        else verbose = 0;
+    }
+    if (verbose == 1) {
+        va_list args;
+        va_start(args, format);
+        vprintf(format, args);
+        va_end(args);
+    }
+}
+
 struct ImagesMetaData {
     int32_t magic_number;
     int32_t images_count;
@@ -48,34 +70,32 @@ int load_mnist() {
         meta_data.height = reverseInt(meta_data.height);
     }
 
-    printf("%d\n", meta_data.height);
-    unsigned char ***images = (unsigned char ***)malloc(meta_data.images_count * sizeof(unsigned char **));
-    if (images == NULL) malloc_error();
-    for (int idx = 0; idx < meta_data.images_count; idx++) {
-        images[idx] = (unsigned char **)malloc(meta_data.height * sizeof(unsigned char *));
-        if (images[idx] == NULL) malloc_error();
-        for (int row = 0; row < meta_data.height; row++) {
-            images[idx][row] = (unsigned char *)malloc(meta_data.width * sizeof(unsigned char));
-            if (images[idx][row] == NULL) malloc_error();
-        }
-    }
+    unsigned char (*images)[meta_data.images_count][meta_data.height][meta_data.width] = malloc(
+            sizeof(unsigned char[meta_data.images_count][meta_data.height][meta_data.width]));
     int offset = 4 * sizeof(int32_t);
     fseek(fptr, offset, SEEK_SET);
 
-    for (int idx = 0; idx < meta_data.images_count; idx++) {
-        for (int row = 0; row < meta_data.height; row++) {
-            for (int col = 0; col < meta_data.width; col++) {
-                fread(&images[idx][row][col], sizeof(unsigned char), 1, fptr);
-                offset++;
-                fseek(fptr, offset, SEEK_SET);
-                if (images[idx][row][col] > 200) printf("@");
-                else if (images[idx][row][col] > 100) printf("1");
-                else if (images[idx][row][col] > 50) printf(".");
-                else printf(" ");
+    print_maybe("Loading %d images ...\n", meta_data.images_count);
+    fread(images, sizeof(
+            unsigned char[meta_data.images_count][meta_data.height][meta_data.width]), 1, fptr);
+
+    if (is_verbose()) {
+        for (int idx = 0; idx < meta_data.images_count; idx++) {
+            bool do_print = idx % 10000 == 0;
+            if (do_print) print_maybe("Image %d\n", idx);
+            for (int row = 0; row < meta_data.height; row++) {
+                for (int col = 0; col < meta_data.width; col++) {
+                    if (do_print) {
+                        if ((*images)[idx][row][col] > 200) print_maybe("@@@");
+                        else if ((*images)[idx][row][col] > 100) print_maybe("111");
+                        else if ((*images)[idx][row][col] > 50) print_maybe("...");
+                        else print_maybe("   ");
+                    }
+                }
+                if (do_print) print_maybe("\n");
             }
-            printf("\n");
+            if (do_print) print_maybe("\n");
         }
-        printf("\n");
     }
 
     fclose(fptr);
