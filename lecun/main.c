@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdarg.h>
 
+const int example_idx = 47;
+
 // turns out MNIST is big-endian
 // https://stackoverflow.com/questions/8286668/how-to-read-mnist-data-in-c
 int reverseInt(int i) {
@@ -16,13 +18,9 @@ int reverseInt(int i) {
     return ((int)c1 << 24) + ((int)c2 << 16) + ((int)c3 << 8) + c4;
 }
 
-void read_error() {
-    printf("Error reading file!");
-    exit(1);
-}
-
-void malloc_error() {
-    printf("Error allocating memory!");
+void error_out(char *error_log) {
+    printf("Error: ");
+    printf("%s", error_log);
     exit(1);
 }
 
@@ -46,6 +44,22 @@ void print_maybe(const char *format, ...) {
     }
 }
 
+typedef struct Labels {
+    int32_t magic_number;
+    int32_t count;
+    unsigned char* data;
+} Labels;
+
+unsigned long labels_allocate(Labels *labels) {
+    unsigned long memory_needed = labels->count * sizeof(unsigned char);
+    labels->data = malloc(memory_needed);
+    return memory_needed;
+}
+
+void labels_deallocate(Labels *labels) {
+    free(labels->data);
+}
+
 typedef struct Images {
     int32_t magic_number;
     int32_t count;
@@ -54,19 +68,19 @@ typedef struct Images {
     unsigned char* data;
 } Images;
 
-unsigned long images_allocate(Images* images) {
+unsigned long images_allocate(Images *images) {
     unsigned long memory_needed = images->count * images->width * images->height * sizeof(unsigned char);
     images->data = malloc(memory_needed);
     return memory_needed;
 }
 
-void images_deallocate(Images* images) {
+void images_deallocate(Images *images) {
     free(images->data);
 }
 
 void show_image(Images images, int index) {
     int img_offset = index * images.height * images.width;
-    print_maybe("Image %d, %d x %d\n", index, images.height, images.width);
+    print_maybe("\nImage %d, %d x %d\n", index, images.height, images.width);
     for (int col = 0; col < images.width+2; col++) print_maybe("# #"); print_maybe("\n");
     for (int row = 0; row < images.height; row++) {
         print_maybe("#  ");
@@ -93,7 +107,7 @@ struct BilinearGrid {
     int* indices_second;
 };
 
-void grid_allocate(struct BilinearGrid* grid, int target_size) {
+void grid_allocate(struct BilinearGrid *grid, int target_size) {
     unsigned long memory_needed_double = target_size * sizeof(double);
     unsigned long memory_needed_int = target_size * sizeof(int);
     grid->target_centers = malloc(memory_needed_double);
@@ -103,7 +117,7 @@ void grid_allocate(struct BilinearGrid* grid, int target_size) {
     grid->indices_second = malloc(memory_needed_int);
 }
 
-void grid_deallocate(struct BilinearGrid* grid) {
+void grid_deallocate(struct BilinearGrid *grid) {
     free(grid->target_centers);
     free(grid->ratios_first);
     free(grid->ratios_second);
@@ -111,7 +125,7 @@ void grid_deallocate(struct BilinearGrid* grid) {
     free(grid->indices_second);
 }
 
-void grid_calculate(struct BilinearGrid* grid, int original_size, int target_size) {
+void grid_calculate(struct BilinearGrid *grid, int original_size, int target_size) {
     for (int i = 0; i < target_size; i++) {
         grid->target_centers[i] = (2 * (double)i + 1) * (double)original_size / (2 * (double)target_size);
         grid->indices_first[i] = (int)(grid->target_centers[i] - 0.5);
@@ -166,24 +180,51 @@ Images resize_bilinear(Images images) {
     grid_deallocate(&vertical_grid);
 
     if (is_verbose()) {
-        show_image(images, 47);
-        show_image(rescaled_images, 47);
+        show_image(images, example_idx);
+        show_image(rescaled_images, example_idx);
     }
 
     images_deallocate(&images);
     return rescaled_images;
 }
 
-Images load_mnist() {
+Labels mnist_load_labels(char *filepath, int magic_number) {
     FILE *fptr;
-    fptr = fopen("/Users/jan/Downloads/train-images-idx3-ubyte", "rb");
-    if(fptr == NULL) read_error();
+    fptr = fopen(filepath, "rb");
+    if(fptr == NULL) error_out("Can't read file.");
+
+    Labels labels;
+    fread(&labels, sizeof(int32_t), 2, fptr);
+    bool swap_endianness = labels.magic_number != magic_number;
+    if (swap_endianness) labels.magic_number = reverseInt(labels.magic_number);
+    if (labels.magic_number != magic_number) error_out("Magic number mismatch.");
+    if (swap_endianness) {
+        labels.count = reverseInt(labels.count);
+    }
+
+    int offset = 2 * sizeof(int32_t);
+    fseek(fptr, offset, SEEK_SET);
+
+    print_maybe("\nLoading %d labels ... ", labels.count);
+    unsigned long memory_needed = labels_allocate(&labels);
+    fread(labels.data, memory_needed, 1, fptr);
+
+    fclose(fptr);
+    print_maybe("success.\n");
+    print_maybe("Label %d: %d\n", example_idx, labels.data[example_idx]);
+    return labels;
+}
+
+Images mnist_load_images(char *filepath, int magic_number) {
+    FILE *fptr;
+    fptr = fopen(filepath, "rb");
+    if(fptr == NULL) error_out("Can't read file.");
 
     Images images;
     fread(&images, sizeof(int32_t), 4, fptr);
-    bool swap_endianness = images.magic_number != 2051;
+    bool swap_endianness = images.magic_number != magic_number;
     if (swap_endianness) images.magic_number = reverseInt(images.magic_number);
-    if (images.magic_number != 2051) read_error();
+    if (images.magic_number != magic_number) error_out("Magic number mismatch.");
     if (swap_endianness) {
         images.count = reverseInt(images.count);
         images.width = reverseInt(images.width);
@@ -202,7 +243,11 @@ Images load_mnist() {
     return images;
 }
 
-int main() {
-    resize_bilinear(load_mnist());
+int main(int argc, char *argv[]) {
+    // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
+    resize_bilinear(mnist_load_images("/Users/jan/Downloads/train-images-idx3-ubyte", 2051));
+    mnist_load_labels("/Users/jan/Downloads/train-labels-idx1-ubyte", 2049);
+    resize_bilinear(mnist_load_images("/Users/jan/Downloads/t10k-images-idx3-ubyte", 2051));
+    mnist_load_labels("/Users/jan/Downloads/t10k-labels-idx1-ubyte", 2049);
     return 0;
 }
