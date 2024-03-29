@@ -44,10 +44,23 @@ void print_maybe(const char *format, ...) {
     }
 }
 
+// inspired by https://stackoverflow.com/questions/6127503/shuffle-array-in-c
+void shuffle_int_array(int *array, size_t n) {
+    if (n > 1) {
+        size_t i;
+        for (i = 0; i < n - 1; i++) {
+            size_t j = i + rand() / (((unsigned int)RAND_MAX + 1) / (n - i));
+            int t = array[j];
+            array[j] = array[i];
+            array[i] = t;
+        }
+    }
+}
+
 typedef struct Labels {
     int32_t magic_number;
     int32_t count;
-    unsigned char* data;
+    unsigned char *data;
 } Labels;
 
 unsigned long labels_allocate(Labels *labels) {
@@ -65,17 +78,28 @@ typedef struct Images {
     int32_t count;
     int32_t width;
     int32_t height;
-    unsigned char* data;
+    unsigned char *data_byte;
+    float *data_float;
 } Images;
 
-unsigned long images_allocate(Images *images) {
+unsigned long images_allocate_byte(Images *images) {
     unsigned long memory_needed = images->count * images->width * images->height * sizeof(unsigned char);
-    images->data = malloc(memory_needed);
+    images->data_byte = malloc(memory_needed);
     return memory_needed;
 }
 
-void images_deallocate(Images *images) {
-    free(images->data);
+void images_deallocate_byte(Images *images) {
+    free(images->data_byte);
+}
+
+unsigned long images_allocate_float(Images *images) {
+    unsigned long memory_needed = images->count * images->width * images->height * sizeof(float);
+    images->data_float = malloc(memory_needed);
+    return memory_needed;
+}
+
+void images_deallocate_float(Images *images) {
+    free(images->data_float);
 }
 
 void show_image(Images images, int index) {
@@ -87,10 +111,10 @@ void show_image(Images images, int index) {
         int row_offset = img_offset + row * images.width;
         for (int col = 0; col < images.width; col++) {
             int idx = row_offset + col;
-            if (images.data[idx] > 200) print_maybe("@@@");
-            else if (images.data[idx] > 100) print_maybe("111");
-            else if (images.data[idx] > 50) print_maybe("...");
-            else if (images.data[idx] > 25) print_maybe(" . ");
+            if (images.data_byte[idx] > 200) print_maybe("@@@");
+            else if (images.data_byte[idx] > 100) print_maybe("111");
+            else if (images.data_byte[idx] > 50) print_maybe("...");
+            else if (images.data_byte[idx] > 25) print_maybe(" . ");
             else print_maybe("   ");
         }
         print_maybe("  #");
@@ -137,13 +161,13 @@ void grid_calculate(struct BilinearGrid *grid, int original_size, int target_siz
     }
 }
 
-Images resize_bilinear(Images images) {
+Images resize_bilinear(Images images, int target_width, int target_height) {
     Images rescaled_images;
     rescaled_images.magic_number = images.magic_number;
     rescaled_images.count = images.count;
-    rescaled_images.width = 16;
-    rescaled_images.height = 16;
-    images_allocate(&rescaled_images);
+    rescaled_images.width = target_width;
+    rescaled_images.height = target_height;
+    images_allocate_byte(&rescaled_images);
 
     struct BilinearGrid horizontal_grid;
     grid_allocate(&horizontal_grid, rescaled_images.width);
@@ -163,14 +187,14 @@ Images resize_bilinear(Images images) {
             int y1_offset = vertical_grid.indices_second[row] * images.width + o_img_offset;
             for (int col = 0; col < rescaled_images.width; col++) {
                 double a = horizontal_grid.ratios_first[col] *
-                        images.data[horizontal_grid.indices_first[col]+y0_offset];
+                        images.data_byte[horizontal_grid.indices_first[col]+y0_offset];
                 double b = horizontal_grid.ratios_second[col] *
-                        images.data[horizontal_grid.indices_second[col]+y0_offset];
+                        images.data_byte[horizontal_grid.indices_second[col]+y0_offset];
                 double c = horizontal_grid.ratios_first[col] *
-                        images.data[horizontal_grid.indices_first[col]+y1_offset];
+                        images.data_byte[horizontal_grid.indices_first[col]+y1_offset];
                 double d = horizontal_grid.ratios_second[col] *
-                        images.data[horizontal_grid.indices_second[col]+y1_offset];
-                rescaled_images.data[idx1 + col] = (unsigned char)(vertical_grid.ratios_first[row] * (a+b) +
+                        images.data_byte[horizontal_grid.indices_second[col]+y1_offset];
+                rescaled_images.data_byte[idx1 + col] = (unsigned char)(vertical_grid.ratios_first[row] * (a+b) +
                         vertical_grid.ratios_second[row] * (c+d));
             }
         }
@@ -184,8 +208,25 @@ Images resize_bilinear(Images images) {
         show_image(rescaled_images, example_idx);
     }
 
-    images_deallocate(&images);
+    images_deallocate_byte(&images);
     return rescaled_images;
+}
+
+Images normalize(Images images) {
+    images_allocate_float(&images);
+    int resolution = images.height * images.width;
+    for (int img = 0; img < images.count; img++) {
+        int img_offset = img * resolution;
+        for (int row = 0; row < images.height; row++) {
+            int row_offset = img_offset + row * images.width;
+            for (int col = 0; col < images.width; col++) {
+                int offset = row_offset + col;
+                images.data_float[offset] = 2 * ((float)images.data_byte[offset] / 255) - 1;
+            }
+        }
+    }
+    images_deallocate_byte(&images);
+    return images;
 }
 
 Labels mnist_load_labels(char *filepath, int magic_number) {
@@ -235,19 +276,47 @@ Images mnist_load_images(char *filepath, int magic_number) {
     fseek(fptr, offset, SEEK_SET);
 
     print_maybe("Loading %d images ... ", images.count);
-    unsigned long memory_needed = images_allocate(&images);
-    fread(images.data, memory_needed, 1, fptr);
+    unsigned long memory_needed = images_allocate_byte(&images);
+    fread(images.data_byte, memory_needed, 1, fptr);
 
     fclose(fptr);
     print_maybe("success.\n");
     return images;
 }
 
+typedef struct Indices {
+    int *train_set;
+    int *test_set;
+} Indices;
+
+void indices_allocate(Indices *indices, int train_count, int test_count) {
+    indices->train_set = malloc(train_count * sizeof(int));
+    indices->test_set = malloc(test_count * sizeof(int));
+}
+
+void indices_deallocate(Indices *indices) {
+    free(indices->train_set);
+    free(indices->test_set);
+}
+
+Indices split_dataset(int total_samples, int train_samples, int test_samples) {
+    int indices[total_samples];
+    for (int i = 0; i < total_samples; i++) indices[i] = i;
+    shuffle_int_array(indices, total_samples);
+    Indices indices_split;
+    indices_allocate(&indices_split, train_samples, test_samples);
+    for (int i = 0; i < train_samples; i++) indices_split.train_set[i] = indices[i];
+    for (int i = 0; i < test_samples; i++) indices_split.test_set[i] = indices[i+train_samples];
+    return indices_split;
+}
+
 int main(int argc, char *argv[]) {
     // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
-    resize_bilinear(mnist_load_images("/Users/jan/Downloads/train-images-idx3-ubyte", 2051));
-    mnist_load_labels("/Users/jan/Downloads/train-labels-idx1-ubyte", 2049);
-    resize_bilinear(mnist_load_images("/Users/jan/Downloads/t10k-images-idx3-ubyte", 2051));
-    mnist_load_labels("/Users/jan/Downloads/t10k-labels-idx1-ubyte", 2049);
+    Images images = normalize(resize_bilinear(
+            mnist_load_images("/Users/jan/Downloads/train-images-idx3-ubyte", 2051),
+            16, 16));
+    Labels labels = mnist_load_labels("/Users/jan/Downloads/train-labels-idx1-ubyte", 2049);
+    if (images.count != labels.count) error_out("Number of images and labels not equal!");
+    Indices indices = split_dataset(images.count, 7291, 2007);
     return 0;
 }
