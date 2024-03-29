@@ -221,7 +221,7 @@ Images normalize(Images images) {
             int row_offset = img_offset + row * images.width;
             for (int col = 0; col < images.width; col++) {
                 int offset = row_offset + col;
-                images.data_float[offset] = 2 * ((float)images.data_byte[offset] / 255) - 1;
+                images.data_float[offset] = ((float)images.data_byte[offset] / (float)127.5) - 1;
             }
         }
     }
@@ -310,6 +310,39 @@ Indices split_dataset(int total_samples, int train_samples, int test_samples) {
     return indices_split;
 }
 
+
+
+typedef struct Conv2D {
+    int kernels_count, height, width;
+    float *weights;
+    float *(*forward)(float*);
+} Conv2D;
+
+void fill_array_random_floats(float *array, int n, double range_start, double range_end) {
+    if (range_end < range_start) error_out("range_end smaller than range_start");
+    double range = range_end - range_start;
+    for (int idx = 0; idx < n; idx++) array[idx] = (float)(range * rand() / RAND_MAX + range_start);
+}
+
+float* Conv2DForward(float *input) {
+    float *tmp = malloc(16);
+    return tmp;
+}
+
+Conv2D Conv2DInit(int kernels_count, int height, int width) {
+    Conv2D conv;
+    conv.forward = Conv2DForward;
+    conv.kernels_count = kernels_count;
+    conv.height = height;
+    conv.width = width;
+    int kernel_size = height * width;
+    int variables_count = kernels_count * kernel_size;
+    conv.weights = malloc(variables_count * sizeof(float));
+    fill_array_random_floats(conv.weights, variables_count,
+                             -2.4/(double)kernel_size, 2.4/(double)kernel_size);
+    return conv;
+}
+
 int main(int argc, char *argv[]) {
     // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
     Images images = normalize(resize_bilinear(
@@ -318,5 +351,7 @@ int main(int argc, char *argv[]) {
     Labels labels = mnist_load_labels("/Users/jan/Downloads/train-labels-idx1-ubyte", 2049);
     if (images.count != labels.count) error_out("Number of images and labels not equal!");
     Indices indices = split_dataset(images.count, 7291, 2007);
+    Conv2D H1 = Conv2DInit(12, 5, 5);
+    H1.forward(images.data_float);
     return 0;
 }
