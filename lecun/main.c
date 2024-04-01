@@ -71,6 +71,7 @@ unsigned long labels_allocate(Labels *labels) {
 
 void labels_deallocate(Labels *labels) {
     free(labels->data);
+    labels->data = NULL;
 }
 
 typedef struct Images {
@@ -90,6 +91,7 @@ unsigned long images_allocate_byte(Images *images) {
 
 void images_deallocate_byte(Images *images) {
     free(images->data_byte);
+    images->data_byte = NULL;
 }
 
 unsigned long images_allocate_float(Images *images) {
@@ -100,6 +102,7 @@ unsigned long images_allocate_float(Images *images) {
 
 void images_deallocate_float(Images *images) {
     free(images->data_float);
+    images->data_float = NULL;
 }
 
 void show_image(Images images, int index) {
@@ -147,6 +150,11 @@ void grid_deallocate(struct BilinearGrid *grid) {
     free(grid->ratios_second);
     free(grid->indices_first);
     free(grid->indices_second);
+    grid->target_centers = NULL;
+    grid->ratios_first = NULL;
+    grid->ratios_second = NULL;
+    grid->indices_first = NULL;
+    grid->indices_second = NULL;
 }
 
 void grid_calculate(struct BilinearGrid *grid, int original_size, int target_size) {
@@ -296,7 +304,9 @@ void indices_allocate(Indices *indices, int train_count, int test_count) {
 
 void indices_deallocate(Indices *indices) {
     free(indices->train_set);
+    indices->train_set = NULL;
     free(indices->test_set);
+    indices->test_set = NULL;
 }
 
 Indices split_dataset(int total_samples, int train_samples, int test_samples) {
@@ -310,12 +320,16 @@ Indices split_dataset(int total_samples, int train_samples, int test_samples) {
     return indices_split;
 }
 
-
+typedef struct Data {
+    int *dims;
+    float *data;
+} Data;
 
 typedef struct Conv2D {
-    int kernels_count, height, width;
+    int kernels_count, stride, height, width;
+    bool padding;
     float *weights;
-    float *(*forward)(float*);
+    void (*forward)(struct Conv2D*, int, Data*, Data*);
 } Conv2D;
 
 void fill_array_random_floats(float *array, int n, double range_start, double range_end) {
@@ -324,15 +338,54 @@ void fill_array_random_floats(float *array, int n, double range_start, double ra
     for (int idx = 0; idx < n; idx++) array[idx] = (float)(range * rand() / RAND_MAX + range_start);
 }
 
-float* Conv2DForward(float *input) {
-    float *tmp = malloc(16);
-    return tmp;
+void Conv2DForward(Conv2D *layer, int kernel_idx, Data *input, Data *output) {
+    if (layer->padding) {
+        int out_h = (input->dims[0] - 1) / layer->stride + 1;
+        int out_w = (input->dims[1] - 1) / layer->stride + 1;
+        free(output->dims);
+        output->dims = (int[2]) {out_h, out_w};
+    } else {
+        if (input->dims[0] < layer->height) error_out("input dim [0] smaller than kernel height");
+        if (input->dims[1] < layer->width) error_out("input dim [1] smaller than kernel width");
+        int out_h = (input->dims[0] - layer->height) / layer->stride + 1;
+        int out_w = (input->dims[1] - layer->width) / layer->stride + 1;
+        free(output->dims);
+        output->dims = (int[2]) {out_h, out_w};
+    }
+    int output_size = output->dims[0] * output->dims[1];
+    free(output->data);
+    output->data = malloc(output_size * sizeof(float));
+    float* kernel = layer->weights + kernel_idx * layer->height * layer->width;
+    int x_start = (layer->padding) ? -layer->width / 2 : 0;
+    int y_start = (layer->padding) ? -layer->height / 2 : 0;
+    int out_idx = 0;
+    for (int y = y_start; y < y_start + output->dims[0] * layer->stride; y += layer->stride) {
+        for (int x = x_start; x < x_start + output->dims[1] * layer->stride; x += layer->stride) {
+            float out = 0;
+            for (int yk = 0; yk < layer->height; yk++) {
+                for (int xk = 0; xk < layer->width; xk++) {
+                    int x_shifted = x + xk;
+                    int y_shifted = y + yk;
+                    if (x_shifted < 0 || y_shifted < 0) out -= kernel[yk * layer->width + xk];
+                    else out += kernel[yk * layer->width + xk] * input->data[y_shifted * input->dims[1] + x_shifted];
+                }
+            }
+            output->data[out_idx] = out;
+            out_idx++;
+        }
+    }
 }
 
-Conv2D Conv2DInit(int kernels_count, int height, int width) {
+Conv2D Conv2DInit(int kernels_count, int stride, bool padding, int height, int width) {
+    if (kernels_count < 1) error_out("kernels count must be >= 1");
+    if (stride < 1) error_out("Conv2D stride has to be >= 1");
+    if (height < 1) error_out("kernel's height has to be >= 1");
+    if (width < 1) error_out("kernel's width has to be >= 1");
     Conv2D conv;
     conv.forward = Conv2DForward;
     conv.kernels_count = kernels_count;
+    conv.stride = stride;
+    conv.padding = padding;
     conv.height = height;
     conv.width = width;
     int kernel_size = height * width;
@@ -351,7 +404,10 @@ int main(int argc, char *argv[]) {
     Labels labels = mnist_load_labels("/Users/jan/Downloads/train-labels-idx1-ubyte", 2049);
     if (images.count != labels.count) error_out("Number of images and labels not equal!");
     Indices indices = split_dataset(images.count, 7291, 2007);
-    Conv2D H1 = Conv2DInit(12, 5, 5);
-    H1.forward(images.data_float);
+    Conv2D H1 = Conv2DInit(12, 2, true, 5, 5);
+    Data input, output;
+    input.dims = (int[2]){16, 16};
+    input.data = images.data_float + 256;
+    H1.forward(&H1, 0, &input, &output);
     return 0;
 }
