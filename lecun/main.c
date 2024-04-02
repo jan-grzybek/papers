@@ -5,6 +5,7 @@
 #include <math.h>
 
 
+const float learning_rate = (float)1e-4;
 const int example_idx = 47;
 
 // turns out MNIST is big-endian
@@ -322,14 +323,35 @@ Indices split_dataset(int total_samples, int train_samples, int test_samples) {
 }
 
 typedef struct Data {
-    int *dims, dims_count;
+    int *dims, dims_count, items;
     float *data;
 } Data;
 
+Data copy_data(Data *data) {
+    Data copy;
+    copy.dims_count = data->dims_count;
+    copy.items = data->items;
+    copy.dims = malloc(data->dims_count * sizeof(int));
+    copy.data = malloc(data->items * sizeof(float));
+    for (int i = 0; i < data->dims_count; i++) copy.dims[i] = data->dims[i];
+    for (int i = 0; i < data->items; i++) copy.data[i] = data->data[i];
+    return copy;
+}
+
+Data copy_data_container(Data *data) {
+    Data copy;
+    copy.dims_count = data->dims_count;
+    copy.items = data->items;
+    copy.dims = malloc(data->dims_count * sizeof(int));
+    copy.data = malloc(data->items * sizeof(float));
+    for (int i = 0; i < data->dims_count; i++) copy.dims[i] = data->dims[i];
+    return copy;
+}
+
 void data_deallocate(Data *data) {
-    free(data->dims);
+    if (data->dims != NULL) free(data->dims);
     data->dims = NULL;
-    free(data->data);
+    if (data->data != NULL) free(data->data);
     data->data = NULL;
 }
 
@@ -347,6 +369,10 @@ void fill_array_random_floats(float *array, int n, double range_start, double ra
     if (range_end < range_start) error_out("range_end smaller than range_start");
     double range = range_end - range_start;
     for (int idx = 0; idx < n; idx++) array[idx] = (float)(range * rand() / RAND_MAX + range_start);
+}
+
+void fill_array_zeros(float *array, int n) {
+    for (int idx = 0; idx < n; idx++) array[idx] = 0;
 }
 
 void Conv2DResetOutput(Conv2D *layer, Data *input) {
@@ -368,8 +394,9 @@ void Conv2DResetOutput(Conv2D *layer, Data *input) {
         layer->output.dims[1] = out_w;
     }
     int output_size = layer->output.dims[0] * layer->output.dims[1];
+    layer->output.items = output_size;
     layer->output.data = malloc(output_size * sizeof(float));
-    for (int i = 0; i < output_size; i++) layer->output.data[i] = 0;
+    fill_array_zeros(layer->output.data, output_size);
     if (layer->bias == NULL) {
         layer->bias = malloc(output_size * sizeof(float));
         fill_array_random_floats(layer->bias, output_size, -2.4, 2.4);
@@ -432,10 +459,14 @@ Conv2D Conv2DInit(int stride, bool padding, int height, int width, int total_ker
 
 typedef struct FC {
     Data output;
-    float *weights, *bias;
+    int forward_offset, backward_offset, weights_size, bias_size;
+    float *weights, *bias, *weights_grad, *bias_grad;
     void (*madd_forward)(struct FC*, Data*);
+    Data (*madd_backward)(struct FC*, Data*, Data*);
     void (*bias_activation_forward)(struct FC*);
+    Data (*bias_activation_backward)(struct FC*, Data*);
     void (*reset_output)(struct FC*);
+    void (*update)(struct FC*);
 } FC;
 
 void FCResetOutput(FC *layer) {
@@ -443,18 +474,43 @@ void FCResetOutput(FC *layer) {
         free(layer->output.data);
         layer->output.data = NULL;
     }
+    layer->output.items = layer->output.dims[0];
     layer->output.data = malloc(layer->output.dims[0] * sizeof(float));
-    for (int i = 0; i < layer->output.dims[0]; i++) layer->output.data[i] = 0;
+    fill_array_zeros(layer->output.data, layer->output.dims[0]);
+    layer->forward_offset = 0;
+    layer->backward_offset = 0;
+}
+
+void FCUpdate(FC *layer) {
+    for (int idx = 0; idx < layer->weights_size; idx++) layer->weights[idx] -= learning_rate * layer->weights_grad[idx];
+    for (int idx = 0; idx < layer->bias_size; idx++) layer->bias[idx] -= learning_rate * layer->bias_grad[idx];
+    fill_array_zeros(layer->weights_grad, layer->weights_size);
+    fill_array_zeros(layer->bias_grad, layer->bias_size);
 }
 
 void FCMAddForward(FC *layer, Data *input) {
-    int in_size = 1;
-    for (int dim_idx = 0; dim_idx < input->dims_count; dim_idx++) in_size *= input->dims[dim_idx];
     for (int out_idx = 0; out_idx < layer->output.dims[0]; out_idx++) {
-        int offset = out_idx * in_size;
-        for (int in_idx = 0; in_idx < in_size; in_idx++)
-            layer->output.data[out_idx] += layer->weights[offset + in_idx] * input->data[in_idx];
+        int out_offset = out_idx * input->items + layer->forward_offset;
+        for (int in_idx = 0; in_idx < input->items; in_idx++)
+            layer->output.data[out_idx] += layer->weights[out_offset + in_idx] * input->data[in_idx];
     }
+    layer->forward_offset += layer->output.dims[0] * input->items;
+    layer->backward_offset = layer->forward_offset;
+}
+
+Data FCMAddBackward(FC *layer, Data *input, Data *upper_derivative) {
+    layer->backward_offset -= layer->output.dims[0] * input->items;
+    Data lower_derivative;
+    lower_derivative = copy_data_container(input);
+    fill_array_zeros(lower_derivative.data, input->items);
+    for (int out_idx = 0; out_idx < layer->output.dims[0]; out_idx++) {
+        int out_offset = out_idx * input->items + layer->backward_offset;
+        for (int in_idx = 0; in_idx < input->items; in_idx++) {
+            layer->weights_grad[out_offset + in_idx] += input->data[in_idx] * upper_derivative->data[out_idx];
+            lower_derivative.data[in_idx] += layer->weights[out_offset + in_idx] * upper_derivative->data[out_idx];
+        }
+    }
+    return lower_derivative;
 }
 
 void FCBiasActivationForward(FC *layer) {
@@ -464,21 +520,42 @@ void FCBiasActivationForward(FC *layer) {
     }
 }
 
+Data FCBiasActivationBackward(FC *layer, Data *upper_derivative) {
+    Data lower_derivative;
+    lower_derivative = copy_data_container(&layer->output);
+    for (int idx = 0; idx < layer->output.dims[0]; idx++) {
+        float tanh_derivative = (float)tanh((double)layer->output.data[idx]);
+        tanh_derivative = (1 - tanh_derivative * tanh_derivative) * upper_derivative->data[idx];
+        layer->bias_grad[idx] += tanh_derivative;
+        lower_derivative.data[idx] = tanh_derivative;
+    }
+    return lower_derivative;
+}
+
 FC FCInit(int input_units, int output_units) {
     if (input_units < 1) error_out("FC must have >= 1 input units");
     if (output_units < 1) error_out("FC must have >= 1 output units");
     FC fc;
     fc.madd_forward = FCMAddForward;
+    fc.madd_backward = FCMAddBackward;
     fc.bias_activation_forward = FCBiasActivationForward;
+    fc.bias_activation_backward = FCBiasActivationBackward;
     fc.reset_output = FCResetOutput;
+    fc.update = FCUpdate;
 
     int fc_size = input_units * output_units;
+    fc.weights_size = fc_size;
     fc.weights = malloc(fc_size * sizeof(float));
     fill_array_random_floats(fc.weights, fc_size,
                              -2.4/(double)(input_units),
                              2.4/(double)(input_units));
+    fc.weights_grad = malloc(fc_size * sizeof(float));
+    fill_array_zeros(fc.weights_grad, fc_size);
+    fc.bias_size = output_units;
     fc.bias = malloc(output_units * sizeof(float));
     fill_array_random_floats(fc.bias, output_units, -2.4, 2.4);
+    fc.bias_grad = malloc(output_units * sizeof(float));
+    fill_array_zeros(fc.bias_grad, output_units);
     fc.output.dims = malloc(sizeof(int));
     fc.output.dims[0] = output_units;
     fc.output.dims_count = 1;
@@ -492,9 +569,11 @@ typedef struct LeNet {
     Conv2D H2_1, H2_2, H2_3, H2_4, H2_5, H2_6, H2_7, H2_8, H2_9, H2_10, H2_11, H2_12;
     FC FC1, FC2;
     Data (*forward)(struct LeNet*, Data*);
+    void (*backward)(struct LeNet*, Data);
 } LeNet;
 
 Data LeNetForward(LeNet *lenet, Data *input) {
+    // A long time ago in a galaxy far, far away ...
     lenet->H1_1.reset_output(&lenet->H1_1, input);
     lenet->H1_2.reset_output(&lenet->H1_2, input);
     lenet->H1_3.reset_output(&lenet->H1_3, input);
@@ -687,13 +766,22 @@ Data LeNetForward(LeNet *lenet, Data *input) {
     lenet->FC2.madd_forward(&lenet->FC2, &lenet->FC1.output);
     lenet->FC2.bias_activation_forward(&lenet->FC2);
 
-    return lenet->FC2.output;
+    return copy_data(&lenet->FC2.output);
+}
+
+void LeNetBackward(LeNet *lenet, Data loss_derivative) {
+    Data d0 = lenet->FC2.bias_activation_backward(&lenet->FC2, &loss_derivative);
+    data_deallocate(&loss_derivative);
+    Data d1 = lenet->FC2.madd_backward(&lenet->FC2, &lenet->FC1.output, &d0);
+    lenet->FC2.update(&lenet->FC2);
+    data_deallocate(&d0);
 }
 
 LeNet LeNetInit() {
     LeNet lenet;
 
     lenet.forward = LeNetForward;
+    lenet.backward = LeNetBackward;
 
     lenet.H1_1 = Conv2DInit(2, true, 5, 5, 1);
     lenet.H1_2 = Conv2DInit(2, true, 5, 5, 1);
@@ -726,6 +814,44 @@ LeNet LeNetInit() {
     return lenet;
 }
 
+float MSEForward(Data *observed, Data *target) {
+    if (observed->dims_count != target->dims_count)
+        error_out("observed and target arrays in MSE are not of equal dimensions");
+    for (int dim_idx = 0; dim_idx < observed->dims_count; dim_idx++) {
+        if (observed->dims[dim_idx] != target->dims[dim_idx])
+            error_out("observed and target arrays in MSE are not of equal dimensions");
+    }
+    float total_diff = 0;
+    for (int idx = 0; idx < observed->items; idx++) {
+        float diff = observed->data[idx] - target->data[idx];
+        total_diff += diff * diff;
+    }
+    return total_diff / (float)observed->items;
+}
+
+Data MSEBackward(Data *observed, Data *target) {
+    Data derivative;
+    derivative = copy_data_container(observed);
+    for (int idx = 0; idx < observed->items; idx++)
+        derivative.data[idx] =  2 * (observed->data[idx] - target->data[idx]) / (float)observed->items;
+    return derivative;
+}
+
+Data mnist_get_target_vector(int label) {
+    int classes = 10;
+    Data target;
+    target.dims = malloc(sizeof(int));
+    target.dims[0] = classes;
+    target.dims_count = 1;
+    target.items = classes;
+    target.data = malloc(classes * sizeof(float));
+    for (int i = 0; i < classes; i++) {
+        if (i == label) target.data[i] = 1;
+        else target.data[i] = -1;
+    }
+    return target;
+}
+
 int main(int argc, char *argv[]) {
     // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
     int train_samples = 7291;
@@ -742,8 +868,15 @@ int main(int argc, char *argv[]) {
         printf("Epoch: ");
         printf("%d\n", epoch);
         for (int img = 0; img < train_samples; img++) {
-            input.data = images.data_float + indices.train_set[img] * images.size;
+            int index = indices.train_set[img];
+            input.data = images.data_float + index * images.size;
             Data output = lenet.forward(&lenet, &input);
+            Data target = mnist_get_target_vector(labels.data[index]);
+            float loss = MSEForward(&output, &target);
+            printf("Loss [MSE]: %f\n", loss);
+            lenet.backward(&lenet, MSEBackward(&output, &target));
+            data_deallocate(&output);
+            data_deallocate(&target);
         }
     }
     return 0;
