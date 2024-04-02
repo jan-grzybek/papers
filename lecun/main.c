@@ -49,7 +49,8 @@ void shuffle_int_array(int *array, size_t n) {
     if (n > 1) {
         size_t i;
         for (i = 0; i < n - 1; i++) {
-            size_t j = i + rand() / (((unsigned int)RAND_MAX + 1) / (n - i));
+            double z = (double)rand() / RAND_MAX;
+            size_t j = i + (int)(z * (double)(n - i));
             int t = array[j];
             array[j] = array[i];
             array[i] = t;
@@ -75,16 +76,13 @@ void labels_deallocate(Labels *labels) {
 }
 
 typedef struct Images {
-    int32_t magic_number;
-    int32_t count;
-    int32_t width;
-    int32_t height;
+    int magic_number, count, height, width, size;
     unsigned char *data_byte;
     float *data_float;
 } Images;
 
 unsigned long images_allocate_byte(Images *images) {
-    unsigned long memory_needed = images->count * images->width * images->height * sizeof(unsigned char);
+    unsigned long memory_needed = images->count * images->size * sizeof(unsigned char);
     images->data_byte = malloc(memory_needed);
     return memory_needed;
 }
@@ -95,7 +93,7 @@ void images_deallocate_byte(Images *images) {
 }
 
 unsigned long images_allocate_float(Images *images) {
-    unsigned long memory_needed = images->count * images->width * images->height * sizeof(float);
+    unsigned long memory_needed = images->count * images->size * sizeof(float);
     images->data_float = malloc(memory_needed);
     return memory_needed;
 }
@@ -106,7 +104,7 @@ void images_deallocate_float(Images *images) {
 }
 
 void show_image(Images images, int index) {
-    int img_offset = index * images.height * images.width;
+    int img_offset = index * images.size;
     print_maybe("\nImage %d, %d x %d\n", index, images.height, images.width);
     for (int col = 0; col < images.width+2; col++) print_maybe("# #"); print_maybe("\n");
     for (int row = 0; row < images.height; row++) {
@@ -175,6 +173,7 @@ Images resize_bilinear(Images images, int target_width, int target_height) {
     rescaled_images.count = images.count;
     rescaled_images.width = target_width;
     rescaled_images.height = target_height;
+    rescaled_images.size = target_height * target_width;
     images_allocate_byte(&rescaled_images);
 
     struct BilinearGrid horizontal_grid;
@@ -222,9 +221,8 @@ Images resize_bilinear(Images images, int target_width, int target_height) {
 
 Images normalize(Images images) {
     images_allocate_float(&images);
-    int resolution = images.height * images.width;
     for (int img = 0; img < images.count; img++) {
-        int img_offset = img * resolution;
+        int img_offset = img * images.size;
         for (int row = 0; row < images.height; row++) {
             int row_offset = img_offset + row * images.width;
             for (int col = 0; col < images.width; col++) {
@@ -279,6 +277,7 @@ Images mnist_load_images(char *filepath, int magic_number) {
         images.width = reverseInt(images.width);
         images.height = reverseInt(images.height);
     }
+    images.size = images.width * images.height;
 
     int offset = 4 * sizeof(int32_t);
     fseek(fptr, offset, SEEK_SET);
@@ -325,11 +324,19 @@ typedef struct Data {
     float *data;
 } Data;
 
+void data_deallocate(Data *data) {
+//    free(data->dims);
+//    data->dims = NULL;
+    free(data->data);
+    data->data = NULL;
+}
+
 typedef struct Conv2D {
-    int kernels_count, stride, height, width;
+    int stride, height, width;
     bool padding;
+    Data output;
     float *weights;
-    void (*forward)(struct Conv2D*, int, Data*, Data*);
+    void (*forward)(struct Conv2D*, Data*);
 } Conv2D;
 
 void fill_array_random_floats(float *array, int n, double range_start, double range_end) {
@@ -338,76 +345,132 @@ void fill_array_random_floats(float *array, int n, double range_start, double ra
     for (int idx = 0; idx < n; idx++) array[idx] = (float)(range * rand() / RAND_MAX + range_start);
 }
 
-void Conv2DForward(Conv2D *layer, int kernel_idx, Data *input, Data *output) {
+void Conv2DForward(Conv2D *layer, Data *input) {
+    if (layer->output.data != NULL) data_deallocate(&layer->output);
     if (layer->padding) {
         int out_h = (input->dims[0] - 1) / layer->stride + 1;
         int out_w = (input->dims[1] - 1) / layer->stride + 1;
-        free(output->dims);
-        output->dims = (int[2]) {out_h, out_w};
+        layer->output.dims = (int[2]) {out_h, out_w};
     } else {
         if (input->dims[0] < layer->height) error_out("input dim [0] smaller than kernel height");
         if (input->dims[1] < layer->width) error_out("input dim [1] smaller than kernel width");
         int out_h = (input->dims[0] - layer->height) / layer->stride + 1;
         int out_w = (input->dims[1] - layer->width) / layer->stride + 1;
-        free(output->dims);
-        output->dims = (int[2]) {out_h, out_w};
+        layer->output.dims = (int[2]) {out_h, out_w};
     }
-    int output_size = output->dims[0] * output->dims[1];
-    free(output->data);
-    output->data = malloc(output_size * sizeof(float));
-    float* kernel = layer->weights + kernel_idx * layer->height * layer->width;
+    int output_size = layer->output.dims[0] * layer->output.dims[1];
+    layer->output.data = malloc(output_size * sizeof(float));
+    float* kernel = layer->weights + output_size;
     int x_start = (layer->padding) ? -layer->width / 2 : 0;
     int y_start = (layer->padding) ? -layer->height / 2 : 0;
     int out_idx = 0;
-    for (int y = y_start; y < y_start + output->dims[0] * layer->stride; y += layer->stride) {
-        for (int x = x_start; x < x_start + output->dims[1] * layer->stride; x += layer->stride) {
+    for (int y = y_start; y < y_start + layer->output.dims[0] * layer->stride; y += layer->stride) {
+        for (int x = x_start; x < x_start + layer->output.dims[1] * layer->stride; x += layer->stride) {
             float out = 0;
             for (int yk = 0; yk < layer->height; yk++) {
                 for (int xk = 0; xk < layer->width; xk++) {
                     int x_shifted = x + xk;
                     int y_shifted = y + yk;
-                    if (x_shifted < 0 || y_shifted < 0) out -= kernel[yk * layer->width + xk];
+                    if (x_shifted < 0 || y_shifted < 0 || input->dims[1] <= x_shifted || input->dims[0] <= y_shifted)
+                        out -= kernel[yk * layer->width + xk];
                     else out += kernel[yk * layer->width + xk] * input->data[y_shifted * input->dims[1] + x_shifted];
                 }
             }
-            output->data[out_idx] = out;
+            layer->output.data[out_idx] = out;
             out_idx++;
         }
     }
 }
 
-Conv2D Conv2DInit(int kernels_count, int stride, bool padding, int height, int width) {
-    if (kernels_count < 1) error_out("kernels count must be >= 1");
+Conv2D Conv2DInit(int stride, bool padding, int height, int width) {
     if (stride < 1) error_out("Conv2D stride has to be >= 1");
     if (height < 1) error_out("kernel's height has to be >= 1");
     if (width < 1) error_out("kernel's width has to be >= 1");
     Conv2D conv;
     conv.forward = Conv2DForward;
-    conv.kernels_count = kernels_count;
     conv.stride = stride;
     conv.padding = padding;
     conv.height = height;
     conv.width = width;
     int kernel_size = height * width;
-    int variables_count = kernels_count * kernel_size;
-    conv.weights = malloc(variables_count * sizeof(float));
-    fill_array_random_floats(conv.weights, variables_count,
+    conv.weights = malloc(kernel_size * sizeof(float));
+    conv.output.data = NULL;
+    fill_array_random_floats(conv.weights, kernel_size,
                              -2.4/(double)kernel_size, 2.4/(double)kernel_size);
+    // for (int i =0; i < 25; i++) conv.weights[i] = i % 2;
     return conv;
+}
+
+typedef struct LeNet {
+    Conv2D H1_1, H1_2, H1_3, H1_4, H1_5, H1_6, H1_7, H1_8, H1_9, H1_10, H1_11, H1_12;
+    Conv2D H2_1, H2_2, H2_3, H2_4, H2_5, H2_6, H2_7, H2_8, H2_9, H2_10, H2_11, H2_12;
+    void (*forward)(struct LeNet*, Data*, Data*);
+} LeNet;
+
+LeNet LeNetInit() {
+    LeNet lenet;
+
+    lenet.H1_1 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_2 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_3 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_4 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_5 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_6 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_7 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_8 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_9 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_10 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_11 = Conv2DInit(2, true, 5, 5);
+    lenet.H1_12 = Conv2DInit(2, true, 5, 5);
+
+    lenet.H2_1 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_2 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_3 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_4 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_5 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_6 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_7 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_8 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_9 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_10 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_11 = Conv2DInit(2, true, 5, 5);
+    lenet.H2_12 = Conv2DInit(2, true, 5, 5);
+    return lenet;
+}
+
+void LeNetForward(LeNet *lenet, Data *input) {
+    lenet->H1_1.forward(&lenet->H1_1, input);
+    lenet->H1_2.forward(&lenet->H1_2, input);
+    lenet->H1_3.forward(&lenet->H1_3, input);
+    lenet->H1_4.forward(&lenet->H1_4, input);
+    lenet->H1_5.forward(&lenet->H1_5, input);
+    lenet->H1_6.forward(&lenet->H1_6, input);
+    lenet->H1_7.forward(&lenet->H1_7, input);
+    lenet->H1_8.forward(&lenet->H1_8, input);
+    lenet->H1_9.forward(&lenet->H1_9, input);
+    lenet->H1_10.forward(&lenet->H1_10, input);
+    lenet->H1_11.forward(&lenet->H1_11, input);
+    lenet->H1_12.forward(&lenet->H1_12, input);
+    //lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_1.output);
 }
 
 int main(int argc, char *argv[]) {
     // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
+    int train_samples = 7291;
     Images images = normalize(resize_bilinear(
             mnist_load_images("/Users/jan/Downloads/train-images-idx3-ubyte", 2051),
             16, 16));
     Labels labels = mnist_load_labels("/Users/jan/Downloads/train-labels-idx1-ubyte", 2049);
     if (images.count != labels.count) error_out("Number of images and labels not equal!");
-    Indices indices = split_dataset(images.count, 7291, 2007);
-    Conv2D H1 = Conv2DInit(12, 2, true, 5, 5);
+    Indices indices = split_dataset(images.count, train_samples, 2007);
+    LeNet lenet = LeNetInit();
     Data input, output;
-    input.dims = (int[2]){16, 16};
-    input.data = images.data_float + 256;
-    H1.forward(&H1, 0, &input, &output);
+    input.dims = (int[2]){images.height, images.width};
+    for (int epoch = 0; epoch < 23; epoch++) {
+        for (int img = 0; img < train_samples; img++) {
+            input.data = images.data_float + indices.train_set[img] * images.size;
+            LeNetForward(&lenet, &input);
+        }
+    }
     return 0;
 }
