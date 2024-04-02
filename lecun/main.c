@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <unistd.h>
+
 
 const int example_idx = 47;
 
@@ -337,6 +339,7 @@ typedef struct Conv2D {
     Data output;
     float *weights;
     void (*forward)(struct Conv2D*, Data*);
+    void (*reset_output)(struct Conv2D*, Data*);
 } Conv2D;
 
 void fill_array_random_floats(float *array, int n, double range_start, double range_end) {
@@ -345,7 +348,7 @@ void fill_array_random_floats(float *array, int n, double range_start, double ra
     for (int idx = 0; idx < n; idx++) array[idx] = (float)(range * rand() / RAND_MAX + range_start);
 }
 
-void Conv2DForward(Conv2D *layer, Data *input) {
+void Conv2DResetOutput(Conv2D *layer, Data *input) {
     if (layer->output.data != NULL) data_deallocate(&layer->output);
     if (layer->padding) {
         int out_h = (input->dims[0] - 1) / layer->stride + 1;
@@ -360,7 +363,10 @@ void Conv2DForward(Conv2D *layer, Data *input) {
     }
     int output_size = layer->output.dims[0] * layer->output.dims[1];
     layer->output.data = malloc(output_size * sizeof(float));
-    float* kernel = layer->weights + output_size;
+    for (int i = 0; i < output_size; i++) layer->output.data[i] = 0;
+}
+
+void Conv2DForward(Conv2D *layer, Data *input) {
     int x_start = (layer->padding) ? -layer->width / 2 : 0;
     int y_start = (layer->padding) ? -layer->height / 2 : 0;
     int out_idx = 0;
@@ -372,11 +378,12 @@ void Conv2DForward(Conv2D *layer, Data *input) {
                     int x_shifted = x + xk;
                     int y_shifted = y + yk;
                     if (x_shifted < 0 || y_shifted < 0 || input->dims[1] <= x_shifted || input->dims[0] <= y_shifted)
-                        out -= kernel[yk * layer->width + xk];
-                    else out += kernel[yk * layer->width + xk] * input->data[y_shifted * input->dims[1] + x_shifted];
+                        out -= layer->weights[yk * layer->width + xk];
+                    else out += layer->weights[yk * layer->width + xk] *
+                            input->data[y_shifted * input->dims[1] + x_shifted];
                 }
             }
-            layer->output.data[out_idx] = out;
+            layer->output.data[out_idx] += out;
             out_idx++;
         }
     }
@@ -388,6 +395,7 @@ Conv2D Conv2DInit(int stride, bool padding, int height, int width) {
     if (width < 1) error_out("kernel's width has to be >= 1");
     Conv2D conv;
     conv.forward = Conv2DForward;
+    conv.reset_output = Conv2DResetOutput;
     conv.stride = stride;
     conv.padding = padding;
     conv.height = height;
@@ -407,8 +415,159 @@ typedef struct LeNet {
     void (*forward)(struct LeNet*, Data*, Data*);
 } LeNet;
 
+void LeNetForward(LeNet *lenet, Data *input, Data *output) {
+    lenet->H1_1.reset_output(&lenet->H1_1, input);
+    lenet->H1_2.reset_output(&lenet->H1_2, input);
+    lenet->H1_3.reset_output(&lenet->H1_3, input);
+    lenet->H1_4.reset_output(&lenet->H1_4, input);
+    lenet->H1_5.reset_output(&lenet->H1_5, input);
+    lenet->H1_6.reset_output(&lenet->H1_6, input);
+    lenet->H1_7.reset_output(&lenet->H1_7, input);
+    lenet->H1_8.reset_output(&lenet->H1_8, input);
+    lenet->H1_9.reset_output(&lenet->H1_9, input);
+    lenet->H1_10.reset_output(&lenet->H1_10, input);
+    lenet->H1_11.reset_output(&lenet->H1_11, input);
+    lenet->H1_12.reset_output(&lenet->H1_12, input);
+
+    lenet->H1_1.forward(&lenet->H1_1, input);
+    lenet->H1_2.forward(&lenet->H1_2, input);
+    lenet->H1_3.forward(&lenet->H1_3, input);
+    lenet->H1_4.forward(&lenet->H1_4, input);
+    lenet->H1_5.forward(&lenet->H1_5, input);
+    lenet->H1_6.forward(&lenet->H1_6, input);
+    lenet->H1_7.forward(&lenet->H1_7, input);
+    lenet->H1_8.forward(&lenet->H1_8, input);
+    lenet->H1_9.forward(&lenet->H1_9, input);
+    lenet->H1_10.forward(&lenet->H1_10, input);
+    lenet->H1_11.forward(&lenet->H1_11, input);
+    lenet->H1_12.forward(&lenet->H1_12, input);
+
+    lenet->H2_1.reset_output(&lenet->H2_1, &lenet->H1_1.output);
+    lenet->H2_2.reset_output(&lenet->H2_2, &lenet->H1_1.output);
+    lenet->H2_3.reset_output(&lenet->H2_3, &lenet->H1_1.output);
+    lenet->H2_4.reset_output(&lenet->H2_4, &lenet->H1_1.output);
+    lenet->H2_5.reset_output(&lenet->H2_5, &lenet->H1_1.output);
+    lenet->H2_6.reset_output(&lenet->H2_6, &lenet->H1_1.output);
+    lenet->H2_7.reset_output(&lenet->H2_7, &lenet->H1_1.output);
+    lenet->H2_8.reset_output(&lenet->H2_8, &lenet->H1_1.output);
+    lenet->H2_9.reset_output(&lenet->H2_9, &lenet->H1_1.output);
+    lenet->H2_10.reset_output(&lenet->H2_10, &lenet->H1_1.output);
+    lenet->H2_11.reset_output(&lenet->H2_11, &lenet->H1_1.output);
+    lenet->H2_12.reset_output(&lenet->H2_12, &lenet->H1_1.output);
+
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_1.output);
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_2.output);
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_4.output);
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_5.output);
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_7.output);
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_8.output);
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_10.output);
+    lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_11.output);
+
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_1.output);
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_2.output);
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_4.output);
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_5.output);
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_7.output);
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_8.output);
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_10.output);
+    lenet->H2_2.forward(&lenet->H2_2, &lenet->H1_11.output);
+
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_1.output);
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_2.output);
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_4.output);
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_5.output);
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_7.output);
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_8.output);
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_10.output);
+    lenet->H2_3.forward(&lenet->H2_3, &lenet->H1_11.output);
+
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_1.output);
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_2.output);
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_4.output);
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_5.output);
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_7.output);
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_8.output);
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_10.output);
+    lenet->H2_4.forward(&lenet->H2_4, &lenet->H1_11.output);
+
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_1.output);
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_3.output);
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_4.output);
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_6.output);
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_7.output);
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_9.output);
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_10.output);
+    lenet->H2_5.forward(&lenet->H2_5, &lenet->H1_12.output);
+
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_1.output);
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_3.output);
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_4.output);
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_6.output);
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_7.output);
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_9.output);
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_10.output);
+    lenet->H2_6.forward(&lenet->H2_6, &lenet->H1_12.output);
+
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_1.output);
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_3.output);
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_4.output);
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_6.output);
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_7.output);
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_9.output);
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_10.output);
+    lenet->H2_7.forward(&lenet->H2_7, &lenet->H1_12.output);
+
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_1.output);
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_3.output);
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_4.output);
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_6.output);
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_7.output);
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_9.output);
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_10.output);
+    lenet->H2_8.forward(&lenet->H2_8, &lenet->H1_12.output);
+
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_2.output);
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_3.output);
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_5.output);
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_6.output);
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_8.output);
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_9.output);
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_11.output);
+    lenet->H2_9.forward(&lenet->H2_9, &lenet->H1_12.output);
+
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_2.output);
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_3.output);
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_5.output);
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_6.output);
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_8.output);
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_9.output);
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_11.output);
+    lenet->H2_10.forward(&lenet->H2_10, &lenet->H1_12.output);
+
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_2.output);
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_3.output);
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_5.output);
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_6.output);
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_8.output);
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_9.output);
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_11.output);
+    lenet->H2_11.forward(&lenet->H2_11, &lenet->H1_12.output);
+
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_2.output);
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_3.output);
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_5.output);
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_6.output);
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_8.output);
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_9.output);
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_11.output);
+    lenet->H2_12.forward(&lenet->H2_12, &lenet->H1_12.output);
+}
+
 LeNet LeNetInit() {
     LeNet lenet;
+
+    lenet.forward = LeNetForward;
 
     lenet.H1_1 = Conv2DInit(2, true, 5, 5);
     lenet.H1_2 = Conv2DInit(2, true, 5, 5);
@@ -438,22 +597,6 @@ LeNet LeNetInit() {
     return lenet;
 }
 
-void LeNetForward(LeNet *lenet, Data *input) {
-    lenet->H1_1.forward(&lenet->H1_1, input);
-    lenet->H1_2.forward(&lenet->H1_2, input);
-    lenet->H1_3.forward(&lenet->H1_3, input);
-    lenet->H1_4.forward(&lenet->H1_4, input);
-    lenet->H1_5.forward(&lenet->H1_5, input);
-    lenet->H1_6.forward(&lenet->H1_6, input);
-    lenet->H1_7.forward(&lenet->H1_7, input);
-    lenet->H1_8.forward(&lenet->H1_8, input);
-    lenet->H1_9.forward(&lenet->H1_9, input);
-    lenet->H1_10.forward(&lenet->H1_10, input);
-    lenet->H1_11.forward(&lenet->H1_11, input);
-    lenet->H1_12.forward(&lenet->H1_12, input);
-    //lenet->H2_1.forward(&lenet->H2_1, &lenet->H1_1.output);
-}
-
 int main(int argc, char *argv[]) {
     // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
     int train_samples = 7291;
@@ -467,10 +610,19 @@ int main(int argc, char *argv[]) {
     Data input, output;
     input.dims = (int[2]){images.height, images.width};
     for (int epoch = 0; epoch < 23; epoch++) {
+        printf("Epoch: ");
+        printf("%d\n", epoch);
         for (int img = 0; img < train_samples; img++) {
+            if (img % 100 == 0) {
+                double completion_rate = (double)img / train_samples;
+                printf("\r");
+                for (int i = 0; i < 81 * completion_rate; i++) printf("#");
+            }
             input.data = images.data_float + indices.train_set[img] * images.size;
-            LeNetForward(&lenet, &input);
+            lenet.forward(&lenet, &input, &output);
+            usleep(1000);
         }
+        printf("\n");
     }
     return 0;
 }

@@ -10,3 +10,8 @@ for t in range(12):
 
 print(x)
 print(links)
+print()
+for h2_, h1 in links.items():
+    for h1_ in h1:
+        print(f"lenet->H2_{h2_+1}.forward(&lenet->H2_{h2_+1}, &lenet->H1_{h1_+1}.output);")
+    print()
