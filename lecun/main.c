@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <math.h>
+#include <stdbool.h>
 
 const bool do_gradient_check = false;
 const float learning_rate = (float)3e-2, eps = (float)1e-4;
