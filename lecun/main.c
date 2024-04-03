@@ -1667,8 +1667,10 @@ void show_kernel(const float *weights, int height, int width, int index) {
             if (val > 0.9) print_maybe("@@@");
             else if (val > 0.8) print_maybe("111");
             else if (val > 0.7) print_maybe("...");
-            else if (val > 0.5) print_maybe(" . ");
-            else print_maybe("   ");
+            else if (val > 0.3) print_maybe(" . ");
+            else if (val > 0.2) print_maybe("...");
+            else if (val > 0.1) print_maybe("111");
+            else print_maybe("@@@");
         }
         print_maybe("  #");
         print_maybe("\n");
