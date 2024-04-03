@@ -4,8 +4,8 @@
 #include <stdarg.h>
 #include <math.h>
 
-
-const float learning_rate = (float)1e-3;
+const bool do_gradient_check = false;
+const float learning_rate = (float)3e-2, eps = (float)1e-4;
 const int example_idx = 47;
 
 // turns out MNIST is big-endian
@@ -403,7 +403,7 @@ void Conv2DResetOutput(Conv2D *layer, Data *input) {
     layer->bias_size = output_size;
     if (layer->bias == NULL) {
         layer->bias = malloc(output_size * sizeof(float));
-        fill_array_random_floats(layer->bias, output_size, -2.4, 2.4);
+        fill_array_zeros(layer->bias, output_size);
     }
     if (layer->bias_grad == NULL) {
         layer->bias_grad = malloc(output_size * sizeof(float));
@@ -477,8 +477,7 @@ Data Conv2DBiasActivationBackward(Conv2D *layer, Data *upper_derivative) {
     Data lower_derivative;
     lower_derivative = copy_data_container(&layer->output);
     for (int idx = 0; idx < layer->output.items; idx++) {
-        float tanh_derivative = (float)tanh((double)layer->output.data[idx]);
-        tanh_derivative = (1 - tanh_derivative * tanh_derivative) * upper_derivative->data[idx];
+        float tanh_derivative = (1 - layer->output.data[idx] * layer->output.data[idx]) * upper_derivative->data[idx];
         layer->bias_grad[idx] += tanh_derivative;
         lower_derivative.data[idx] = tanh_derivative;
     }
@@ -560,11 +559,9 @@ void FCMAddForward(FC *layer, Data *input) {
             layer->output.data[out_idx] += layer->weights[out_offset + in_idx] * input->data[in_idx];
     }
     layer->forward_offset += layer->output.dims[0] * input->items;
-    layer->backward_offset = layer->forward_offset;
 }
 
 Data FCMAddBackward(FC *layer, Data *input, Data *upper_derivative) {
-    layer->backward_offset -= layer->output.dims[0] * input->items;
     Data lower_derivative;
     lower_derivative = copy_data_container(input);
     fill_array_zeros(lower_derivative.data, input->items);
@@ -575,6 +572,7 @@ Data FCMAddBackward(FC *layer, Data *input, Data *upper_derivative) {
             lower_derivative.data[in_idx] += layer->weights[out_offset + in_idx] * upper_derivative->data[out_idx];
         }
     }
+    layer->backward_offset += layer->output.dims[0] * input->items;
     return lower_derivative;
 }
 
@@ -589,8 +587,7 @@ Data FCBiasActivationBackward(FC *layer, Data *upper_derivative) {
     Data lower_derivative;
     lower_derivative = copy_data_container(&layer->output);
     for (int idx = 0; idx < layer->output.dims[0]; idx++) {
-        float tanh_derivative = (float)tanh((double)layer->output.data[idx]);
-        tanh_derivative = (1 - tanh_derivative * tanh_derivative) * upper_derivative->data[idx];
+        float tanh_derivative = (1 - layer->output.data[idx] * layer->output.data[idx]) * upper_derivative->data[idx];
         layer->bias_grad[idx] += tanh_derivative;
         lower_derivative.data[idx] = tanh_derivative;
     }
@@ -618,7 +615,7 @@ FC FCInit(int input_units, int output_units) {
     fill_array_zeros(fc.weights_grad, fc_size);
     fc.bias_size = output_units;
     fc.bias = malloc(output_units * sizeof(float));
-    fill_array_random_floats(fc.bias, output_units, -2.4, 2.4);
+    fill_array_zeros(fc.bias, output_units);
     fc.bias_grad = malloc(output_units * sizeof(float));
     fill_array_zeros(fc.bias_grad, output_units);
     fc.output.dims = malloc(sizeof(int));
@@ -629,12 +626,37 @@ FC FCInit(int input_units, int output_units) {
     return fc;
 }
 
+float MSEForward(Data *observed, Data *target) {
+    if (observed->dims_count != target->dims_count)
+        error_out("observed and target arrays in MSE are not of equal dimensions");
+    for (int dim_idx = 0; dim_idx < observed->dims_count; dim_idx++) {
+        if (observed->dims[dim_idx] != target->dims[dim_idx])
+            error_out("observed and target arrays in MSE are not of equal dimensions");
+    }
+    float total_diff = 0;
+    for (int idx = 0; idx < observed->items; idx++) {
+        float diff = observed->data[idx] - target->data[idx];
+        total_diff += diff * diff;
+    }
+    return total_diff / (float)observed->items;
+}
+
+Data MSEBackward(Data *observed, Data *target) {
+    Data derivative;
+    derivative = copy_data_container(observed);
+    for (int idx = 0; idx < observed->items; idx++)
+        derivative.data[idx] =  2 * (observed->data[idx] - target->data[idx]) / (float)observed->items;
+    return derivative;
+}
+
 typedef struct LeNet {
     Conv2D H1_1, H1_2, H1_3, H1_4, H1_5, H1_6, H1_7, H1_8, H1_9, H1_10, H1_11, H1_12;
     Conv2D H2_1, H2_2, H2_3, H2_4, H2_5, H2_6, H2_7, H2_8, H2_9, H2_10, H2_11, H2_12;
     FC FC1, FC2;
     Data (*forward)(struct LeNet*, Data*);
     void (*backward)(struct LeNet*, Data*, Data);
+    void (*update)(struct LeNet*);
+    void (*grad_check)(struct LeNet*, Data*, Data*);
 } LeNet;
 
 Data LeNetForward(LeNet *lenet, Data *input) {
@@ -832,6 +854,35 @@ Data LeNetForward(LeNet *lenet, Data *input) {
     lenet->FC2.bias_activation_forward(&lenet->FC2);
 
     return copy_data(&lenet->FC2.output);
+}
+
+void LeNetUpdate(LeNet *lenet) {
+    lenet->FC2.update(&lenet->FC2);
+    lenet->FC1.update(&lenet->FC1);
+    lenet->H2_12.update(&lenet->H2_12);
+    lenet->H2_11.update(&lenet->H2_11);
+    lenet->H2_10.update(&lenet->H2_10);
+    lenet->H2_9.update(&lenet->H2_9);
+    lenet->H2_8.update(&lenet->H2_8);
+    lenet->H2_7.update(&lenet->H2_7);
+    lenet->H2_6.update(&lenet->H2_6);
+    lenet->H2_5.update(&lenet->H2_5);
+    lenet->H2_4.update(&lenet->H2_4);
+    lenet->H2_3.update(&lenet->H2_3);
+    lenet->H2_2.update(&lenet->H2_2);
+    lenet->H2_1.update(&lenet->H2_1);
+    lenet->H1_12.update(&lenet->H1_12);
+    lenet->H1_11.update(&lenet->H1_11);
+    lenet->H1_10.update(&lenet->H1_10);
+    lenet->H1_9.update(&lenet->H1_9);
+    lenet->H1_8.update(&lenet->H1_8);
+    lenet->H1_7.update(&lenet->H1_7);
+    lenet->H1_6.update(&lenet->H1_6);
+    lenet->H1_5.update(&lenet->H1_5);
+    lenet->H1_4.update(&lenet->H1_4);
+    lenet->H1_3.update(&lenet->H1_3);
+    lenet->H1_2.update(&lenet->H1_2);
+    lenet->H1_1.update(&lenet->H1_1);
 }
 
 void LeNetBackward(LeNet *lenet, Data *input, Data loss_derivative) {
@@ -1479,33 +1530,56 @@ void LeNetBackward(LeNet *lenet, Data *input, Data loss_derivative) {
     data_deallocate(&d8);
     lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
     data_deallocate(&d0);
+}
 
-    lenet->FC2.update(&lenet->FC2);
-    lenet->FC1.update(&lenet->FC1);
-    lenet->H2_12.update(&lenet->H2_12);
-    lenet->H2_11.update(&lenet->H2_11);
-    lenet->H2_10.update(&lenet->H2_10);
-    lenet->H2_9.update(&lenet->H2_9);
-    lenet->H2_8.update(&lenet->H2_8);
-    lenet->H2_7.update(&lenet->H2_7);
-    lenet->H2_6.update(&lenet->H2_6);
-    lenet->H2_5.update(&lenet->H2_5);
-    lenet->H2_4.update(&lenet->H2_4);
-    lenet->H2_3.update(&lenet->H2_3);
-    lenet->H2_2.update(&lenet->H2_2);
-    lenet->H2_1.update(&lenet->H2_1);
-    lenet->H1_12.update(&lenet->H1_12);
-    lenet->H1_11.update(&lenet->H1_11);
-    lenet->H1_10.update(&lenet->H1_10);
-    lenet->H1_9.update(&lenet->H1_9);
-    lenet->H1_8.update(&lenet->H1_8);
-    lenet->H1_7.update(&lenet->H1_7);
-    lenet->H1_6.update(&lenet->H1_6);
-    lenet->H1_5.update(&lenet->H1_5);
-    lenet->H1_4.update(&lenet->H1_4);
-    lenet->H1_3.update(&lenet->H1_3);
-    lenet->H1_2.update(&lenet->H1_2);
-    lenet->H1_1.update(&lenet->H1_1);
+void check_grad(LeNet *lenet, Data *input, Data *target, float *parameters, float *grads, int size) {
+    for (int i = 0; i < size; i++) {
+        // change var +eps
+        float tmp = parameters[i];
+        parameters[i] += eps;
+        Data output = lenet->forward(lenet, input);
+        float loss_0 = MSEForward(&output, target);
+        data_deallocate(&output);
+        // change var -2*eps
+        parameters[i] = tmp - eps;
+        output = lenet->forward(lenet, input);
+        float loss_1 = MSEForward(&output, target);
+        data_deallocate(&output);
+        // reset parameter val
+        parameters[i] = tmp;
+        double est_grad = (loss_0 - loss_1) / (2 * eps);
+        double magnitude = fmax(fabs(est_grad), fabs((double)grads[i]));
+        double rel_diff = fabs(est_grad - grads[i]) / magnitude;
+        if (rel_diff > 1e-1) {
+            printf("idx [%d], rel diff = %f\n", i, rel_diff);
+            printf("%f\n", est_grad);
+            printf("%f\n", grads[i]);
+        }
+    }
+}
+
+void LeNetGradCheck(LeNet *lenet, Data *input, Data *target) {
+    printf("\nGrad check: FC2.bias\n");
+    check_grad(lenet, input, target, lenet->FC2.bias, lenet->FC2.bias_grad, lenet->FC2.bias_size);
+    printf("\nGrad check: FC2.weights\n");
+    check_grad(lenet, input, target, lenet->FC2.weights, lenet->FC2.weights_grad, lenet->FC2.weights_size);
+    printf("\nGrad check: FC1.bias\n");
+    check_grad(lenet, input, target, lenet->FC1.bias, lenet->FC1.bias_grad, lenet->FC1.bias_size);
+    printf("\nGrad check: FC1.weights\n");
+    check_grad(lenet, input, target, lenet->FC1.weights, lenet->FC1.weights_grad, lenet->FC1.weights_size);
+    printf("\nGrad check: H2_1.bias\n");
+    check_grad(lenet, input, target, lenet->H2_1.bias, lenet->H2_1.bias_grad, lenet->H2_1.bias_size);
+    printf("\nGrad check: H2_1.weights\n");
+    check_grad(lenet, input, target, lenet->H2_1.weights, lenet->H2_1.weights_grad, lenet->H2_1.weights_size);
+    printf("\nGrad check: H2_12.bias\n");
+    check_grad(lenet, input, target, lenet->H2_12.bias, lenet->H2_12.bias_grad, lenet->H2_12.bias_size);
+    printf("\nGrad check: H2_12.weights\n");
+    check_grad(lenet, input, target, lenet->H2_12.weights, lenet->H2_12.weights_grad, lenet->H2_12.weights_size);
+    printf("\nGrad check: H1_12.bias\n");
+    check_grad(lenet, input, target, lenet->H1_12.bias, lenet->H1_12.bias_grad, lenet->H1_12.bias_size);
+    printf("\nGrad check: H1_12.weights\n");
+    check_grad(lenet, input, target, lenet->H1_12.weights, lenet->H1_12.weights_grad, lenet->H1_12.weights_size);
+    exit(0);
 }
 
 LeNet LeNetInit() {
@@ -1513,6 +1587,8 @@ LeNet LeNetInit() {
 
     lenet.forward = LeNetForward;
     lenet.backward = LeNetBackward;
+    lenet.update = LeNetUpdate;
+    lenet.grad_check = LeNetGradCheck;
 
     lenet.H1_1 = Conv2DInit(2, true, 5, 5, 1);
     lenet.H1_2 = Conv2DInit(2, true, 5, 5, 1);
@@ -1545,29 +1621,6 @@ LeNet LeNetInit() {
     return lenet;
 }
 
-float MSEForward(Data *observed, Data *target) {
-    if (observed->dims_count != target->dims_count)
-        error_out("observed and target arrays in MSE are not of equal dimensions");
-    for (int dim_idx = 0; dim_idx < observed->dims_count; dim_idx++) {
-        if (observed->dims[dim_idx] != target->dims[dim_idx])
-            error_out("observed and target arrays in MSE are not of equal dimensions");
-    }
-    float total_diff = 0;
-    for (int idx = 0; idx < observed->items; idx++) {
-        float diff = observed->data[idx] - target->data[idx];
-        total_diff += diff * diff;
-    }
-    return total_diff / (float)observed->items;
-}
-
-Data MSEBackward(Data *observed, Data *target) {
-    Data derivative;
-    derivative = copy_data_container(observed);
-    for (int idx = 0; idx < observed->items; idx++)
-        derivative.data[idx] =  2 * (observed->data[idx] - target->data[idx]) / (float)observed->items;
-    return derivative;
-}
-
 Data mnist_get_target_vector(int label) {
     int classes = 10;
     Data target;
@@ -1583,40 +1636,78 @@ Data mnist_get_target_vector(int label) {
     return target;
 }
 
+int get_prediction(Data *output) {
+    int argmax = 0;
+    double max_val = -2.0;
+    for (int i = 0; i < output->dims[0]; i++) {
+        if (output->data[i] > max_val) {
+            max_val = output->data[i];
+            argmax = i;
+        }
+    }
+    return argmax;
+}
+
 int main(int argc, char *argv[]) {
     // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
     int train_samples = 7291;
+    int test_samples = 2007;
     Images images = normalize(resize_bilinear(
             mnist_load_images(argv[1], 2051),
             16, 16));
     Labels labels = mnist_load_labels(argv[2], 2049);
     if (images.count != labels.count) error_out("Number of images and labels not equal!");
-    Indices indices = split_dataset(images.count, train_samples, 2007);
+    Indices indices = split_dataset(images.count, train_samples, test_samples);
     LeNet lenet = LeNetInit();
     Data input;
     input.dims = (int[2]){images.height, images.width};
     for (int epoch = 0; epoch < 23; epoch++) {
-        printf("Epoch: ");
+        printf("\nEpoch: ");
         printf("%d\n", epoch);
-        float total_loss = 0;
         for (int img = 0; img < train_samples; img++) {
             int index = indices.train_set[img];
             input.data = images.data_float + index * images.size;
             Data output = lenet.forward(&lenet, &input);
             Data target = mnist_get_target_vector(labels.data[index]);
-            if (img % 1000 == 0) {
-                printf("/////\n");
-                for (int i = 0; i < 10; i++) printf("%f\n", output.data[i]);
-                for (int i = 0; i < 10; i++) printf("%f\n", target.data[i]);
-            }
             float loss = MSEForward(&output, &target);
-            if (img % 1000 == 0) printf("Loss [MSE]: %f\n", loss);
-            total_loss += loss;
+            if (img % 1000 == 0) print_maybe("Loss [MSE]: %f\n", loss);
             lenet.backward(&lenet, &input, MSEBackward(&output, &target));
+            if (do_gradient_check && loss < 0.1) lenet.grad_check(&lenet, &input, &target);
+            lenet.update(&lenet);
             data_deallocate(&output);
             data_deallocate(&target);
         }
-        printf("\nAvg loss [MSE]: %f\n\n", total_loss / (float)train_samples);
+
+        float total_loss = 0;
+        int misclassified_count = 0;
+        for (int img = 0; img < train_samples; img++) {
+            int index = indices.train_set[img];
+            input.data = images.data_float + index * images.size;
+            Data output = lenet.forward(&lenet, &input);
+            Data target = mnist_get_target_vector(labels.data[index]);
+            misclassified_count += get_prediction(&output) != labels.data[index];
+            total_loss += MSEForward(&output, &target);
+            data_deallocate(&output);
+            data_deallocate(&target);
+        }
+        printf("\nAvg loss training set [MSE]: %f", total_loss / (float)train_samples);
+        printf("\nMisclassified patterns training set: %.2f%%\n",
+               (float)misclassified_count * 100 / (float)train_samples);
+
+        total_loss = 0;
+        misclassified_count = 0;
+        for (int img = 0; img < test_samples; img++) {
+            int index = indices.test_set[img];
+            input.data = images.data_float + index * images.size;
+            Data output = lenet.forward(&lenet, &input);
+            Data target = mnist_get_target_vector(labels.data[index]);
+            misclassified_count += get_prediction(&output) != labels.data[index];
+            total_loss += MSEForward(&output, &target);
+            data_deallocate(&output);
+            data_deallocate(&target);
+        }
+        printf("\nAvg loss test set [MSE]: %f", total_loss / (float)train_samples);
+        printf("\nMisclassified patterns test set: %.2f%%\n", (float)misclassified_count * 100 / (float)train_samples);
     }
     return 0;
 }
