@@ -1648,6 +1648,34 @@ int get_prediction(Data *output) {
     return argmax;
 }
 
+void show_kernel(const float *weights, int height, int width, int index) {
+    int size = width * height;
+    float max_value = -1000, min_value = 1000;
+    for (int i = 0; i < size; i++) {
+        if (weights[i] > max_value) max_value = weights[i];
+        if (weights[i] < min_value) min_value = weights[i];
+    }
+    float range = max_value - min_value;
+    print_maybe("\nKernel %d, %d x %d\n", index, height, width);
+    for (int col = 0; col < width+2; col++) print_maybe("# #"); print_maybe("\n");
+    for (int row = 0; row < height; row++) {
+        print_maybe("#  ");
+        int row_offset = row * width;
+        for (int col = 0; col < width; col++) {
+            int idx = row_offset + col;
+            float val = (weights[idx] - min_value) / range;
+            if (val > 0.9) print_maybe("@@@");
+            else if (val > 0.8) print_maybe("111");
+            else if (val > 0.7) print_maybe("...");
+            else if (val > 0.5) print_maybe(" . ");
+            else print_maybe("   ");
+        }
+        print_maybe("  #");
+        print_maybe("\n");
+    }
+    for (int col = 0; col < width+2; col++) print_maybe("# #"); print_maybe("\n");
+}
+
 int main(int argc, char *argv[]) {
     // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
     int train_samples = 7291;
@@ -1708,6 +1736,19 @@ int main(int argc, char *argv[]) {
         }
         printf("\nAvg loss test set [MSE]: %f", total_loss / (float)train_samples);
         printf("\nMisclassified patterns test set: %.2f%%\n", (float)misclassified_count * 100 / (float)train_samples);
+
+        show_kernel(lenet.H1_1.weights, lenet.H1_1.height, lenet.H1_1.width, 1);
+        show_kernel(lenet.H1_2.weights, lenet.H1_2.height, lenet.H1_2.width, 2);
+        show_kernel(lenet.H1_3.weights, lenet.H1_3.height, lenet.H1_3.width, 3);
+        show_kernel(lenet.H1_4.weights, lenet.H1_4.height, lenet.H1_4.width, 4);
+        show_kernel(lenet.H1_5.weights, lenet.H1_5.height, lenet.H1_5.width, 5);
+        show_kernel(lenet.H1_6.weights, lenet.H1_6.height, lenet.H1_6.width, 6);
+        show_kernel(lenet.H1_7.weights, lenet.H1_7.height, lenet.H1_7.width, 7);
+        show_kernel(lenet.H1_8.weights, lenet.H1_8.height, lenet.H1_8.width, 8);
+        show_kernel(lenet.H1_9.weights, lenet.H1_9.height, lenet.H1_9.width, 9);
+        show_kernel(lenet.H1_10.weights, lenet.H1_10.height, lenet.H1_10.width, 10);
+        show_kernel(lenet.H1_11.weights, lenet.H1_11.height, lenet.H1_11.width, 11);
+        show_kernel(lenet.H1_12.weights, lenet.H1_12.height, lenet.H1_12.width, 12);
     }
     return 0;
 }
