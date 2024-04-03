@@ -5,7 +5,7 @@
 #include <math.h>
 
 
-const float learning_rate = (float)1e-4;
+const float learning_rate = (float)1e-3;
 const int example_idx = 47;
 
 // turns out MNIST is big-endian
@@ -356,13 +356,16 @@ void data_deallocate(Data *data) {
 }
 
 typedef struct Conv2D {
-    int stride, height, width;
+    int stride, height, width, weights_size, bias_size;
     bool padding;
     Data output;
-    float *weights, *bias;
+    float *weights, *bias, *weights_grad, *bias_grad;;
     void (*kernel_forward)(struct Conv2D*, Data*);
+    Data (*kernel_backward)(struct Conv2D*, Data*, Data*, bool);
     void (*bias_activation_forward)(struct Conv2D*);
+    Data (*bias_activation_backward)(struct Conv2D*, Data*);
     void (*reset_output)(struct Conv2D*, Data*);
+    void (*update)(struct Conv2D*);
 } Conv2D;
 
 void fill_array_random_floats(float *array, int n, double range_start, double range_end) {
@@ -397,9 +400,14 @@ void Conv2DResetOutput(Conv2D *layer, Data *input) {
     layer->output.items = output_size;
     layer->output.data = malloc(output_size * sizeof(float));
     fill_array_zeros(layer->output.data, output_size);
+    layer->bias_size = output_size;
     if (layer->bias == NULL) {
         layer->bias = malloc(output_size * sizeof(float));
         fill_array_random_floats(layer->bias, output_size, -2.4, 2.4);
+    }
+    if (layer->bias_grad == NULL) {
+        layer->bias_grad = malloc(output_size * sizeof(float));
+        fill_array_zeros(layer->bias_grad, output_size);
     }
 }
 
@@ -426,6 +434,37 @@ void Conv2DKernelForward(Conv2D *layer, Data *input) {
     }
 }
 
+Data Conv2DKernelBackward(Conv2D *layer, Data *input, Data *upper_derivative, bool input_layer) {
+    Data lower_derivative;
+    if (!input_layer) {
+        lower_derivative = copy_data_container(input);
+        fill_array_zeros(lower_derivative.data, input->items);
+    }
+    int x_start = (layer->padding) ? -layer->width / 2 : 0;
+    int y_start = (layer->padding) ? -layer->height / 2 : 0;
+    int out_idx = 0;
+    for (int y = y_start; y < y_start + layer->output.dims[0] * layer->stride; y += layer->stride) {
+        for (int x = x_start; x < x_start + layer->output.dims[1] * layer->stride; x += layer->stride) {
+            for (int yk = 0; yk < layer->height; yk++) {
+                for (int xk = 0; xk < layer->width; xk++) {
+                    int x_shifted = x + xk;
+                    int y_shifted = y + yk;
+                    if (x_shifted < 0 || y_shifted < 0 || input->dims[1] <= x_shifted || input->dims[0] <= y_shifted)
+                        layer->weights_grad[yk * layer->width + xk] -= upper_derivative->data[out_idx];
+                    else {
+                        layer->weights_grad[yk * layer->width + xk] +=
+                                input->data[y_shifted * input->dims[1] + x_shifted] * upper_derivative->data[out_idx];
+                        if (!input_layer) lower_derivative.data[y_shifted * input->dims[1] + x_shifted] +=
+                                layer->weights[yk * layer->width + xk] * upper_derivative->data[out_idx];
+                    }
+                }
+            }
+            out_idx++;
+        }
+    }
+    return lower_derivative;
+}
+
 void Conv2DBiasActivationForward(Conv2D *layer) {
     int output_size = layer->output.dims[0] * layer->output.dims[1];
     for (int idx = 0; idx < output_size; idx++) {
@@ -434,24 +473,50 @@ void Conv2DBiasActivationForward(Conv2D *layer) {
     }
 }
 
+Data Conv2DBiasActivationBackward(Conv2D *layer, Data *upper_derivative) {
+    Data lower_derivative;
+    lower_derivative = copy_data_container(&layer->output);
+    for (int idx = 0; idx < layer->output.items; idx++) {
+        float tanh_derivative = (float)tanh((double)layer->output.data[idx]);
+        tanh_derivative = (1 - tanh_derivative * tanh_derivative) * upper_derivative->data[idx];
+        layer->bias_grad[idx] += tanh_derivative;
+        lower_derivative.data[idx] = tanh_derivative;
+    }
+    return lower_derivative;
+}
+
+void Conv2DUpdate(Conv2D *layer) {
+    for (int idx = 0; idx < layer->weights_size; idx++) layer->weights[idx] -= learning_rate * layer->weights_grad[idx];
+    for (int idx = 0; idx < layer->bias_size; idx++) layer->bias[idx] -= learning_rate * layer->bias_grad[idx];
+    fill_array_zeros(layer->weights_grad, layer->weights_size);
+    fill_array_zeros(layer->bias_grad, layer->bias_size);
+}
+
 Conv2D Conv2DInit(int stride, bool padding, int height, int width, int total_kernels) {
     if (stride < 1) error_out("Conv2D stride has to be >= 1");
     if (height < 1) error_out("kernel's height has to be >= 1");
     if (width < 1) error_out("kernel's width has to be >= 1");
     Conv2D conv;
     conv.kernel_forward = Conv2DKernelForward;
+    conv.kernel_backward = Conv2DKernelBackward;
     conv.bias_activation_forward = Conv2DBiasActivationForward;
+    conv.bias_activation_backward = Conv2DBiasActivationBackward;
     conv.reset_output = Conv2DResetOutput;
+    conv.update = Conv2DUpdate;
     conv.stride = stride;
     conv.padding = padding;
     conv.height = height;
     conv.width = width;
     int kernel_size = height * width;
+    conv.weights_size = kernel_size;
     conv.weights = malloc(kernel_size * sizeof(float));
     fill_array_random_floats(conv.weights, kernel_size,
                              -2.4/(double)(kernel_size * total_kernels),
                              2.4/(double)(kernel_size * total_kernels));
+    conv.weights_grad = malloc(kernel_size * sizeof(float));
+    fill_array_zeros(conv.weights_grad, kernel_size);
     conv.bias = NULL;
+    conv.bias_grad = NULL;
     conv.output.data = NULL;
     // for (int i =0; i < 25; i++) conv.weights[i] = i % 2;
     return conv;
@@ -569,7 +634,7 @@ typedef struct LeNet {
     Conv2D H2_1, H2_2, H2_3, H2_4, H2_5, H2_6, H2_7, H2_8, H2_9, H2_10, H2_11, H2_12;
     FC FC1, FC2;
     Data (*forward)(struct LeNet*, Data*);
-    void (*backward)(struct LeNet*, Data);
+    void (*backward)(struct LeNet*, Data*, Data);
 } LeNet;
 
 Data LeNetForward(LeNet *lenet, Data *input) {
@@ -769,12 +834,678 @@ Data LeNetForward(LeNet *lenet, Data *input) {
     return copy_data(&lenet->FC2.output);
 }
 
-void LeNetBackward(LeNet *lenet, Data loss_derivative) {
+void LeNetBackward(LeNet *lenet, Data *input, Data loss_derivative) {
     Data d0 = lenet->FC2.bias_activation_backward(&lenet->FC2, &loss_derivative);
     data_deallocate(&loss_derivative);
     Data d1 = lenet->FC2.madd_backward(&lenet->FC2, &lenet->FC1.output, &d0);
-    lenet->FC2.update(&lenet->FC2);
     data_deallocate(&d0);
+
+    d0 = lenet->FC1.bias_activation_backward(&lenet->FC1, &d1);
+    data_deallocate(&d1);
+    d1 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_1.output, &d0);
+    Data d2 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_2.output, &d0);
+    Data d3 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_3.output, &d0);
+    Data d4 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_4.output, &d0);
+    Data d5 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_5.output, &d0);
+    Data d6 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_6.output, &d0);
+    Data d7 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_7.output, &d0);
+    Data d8 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_8.output, &d0);
+    Data d9 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_9.output, &d0);
+    Data d10 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_10.output, &d0);
+    Data d11 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_11.output, &d0);
+    Data d12 = lenet->FC1.madd_backward(&lenet->FC1, &lenet->H2_12.output, &d0);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_1.bias_activation_backward(&lenet->H2_1, &d1);
+    data_deallocate(&d1);
+    d1 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_1.output, &d0, false);
+    Data d13 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_2.output, &d0, false);
+    Data d14 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_4.output, &d0, false);
+    Data d15 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_5.output, &d0, false);
+    Data d16 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_7.output, &d0, false);
+    Data d17 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_8.output, &d0, false);
+    Data d18 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_10.output, &d0, false);
+    Data d19 = lenet->H2_1.kernel_backward(&lenet->H2_1, &lenet->H1_11.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d13);
+    data_deallocate(&d13);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d14);
+    data_deallocate(&d14);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d15);
+    data_deallocate(&d15);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d16);
+    data_deallocate(&d16);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d17);
+    data_deallocate(&d17);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d18);
+    data_deallocate(&d18);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d19);
+    data_deallocate(&d19);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_2.bias_activation_backward(&lenet->H2_2, &d2);
+    data_deallocate(&d2);
+    d1 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_1.output, &d0, false);
+    d2 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_2.output, &d0, false);
+    d13 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_4.output, &d0, false);
+    d14 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_5.output, &d0, false);
+    d15 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_7.output, &d0, false);
+    d16 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_8.output, &d0, false);
+    d17 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_10.output, &d0, false);
+    d18 = lenet->H2_2.kernel_backward(&lenet->H2_2, &lenet->H1_11.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d2);
+    data_deallocate(&d2);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d13);
+    data_deallocate(&d13);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d14);
+    data_deallocate(&d14);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d15);
+    data_deallocate(&d15);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d16);
+    data_deallocate(&d16);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d17);
+    data_deallocate(&d17);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d18);
+    data_deallocate(&d18);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_3.bias_activation_backward(&lenet->H2_3, &d3);
+    data_deallocate(&d3);
+    d1 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_1.output, &d0, false);
+    d2 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_2.output, &d0, false);
+    d3 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_4.output, &d0, false);
+    d13 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_5.output, &d0, false);
+    d14 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_7.output, &d0, false);
+    d15 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_8.output, &d0, false);
+    d16 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_10.output, &d0, false);
+    d17 = lenet->H2_3.kernel_backward(&lenet->H2_3, &lenet->H1_11.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d2);
+    data_deallocate(&d2);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d3);
+    data_deallocate(&d3);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d13);
+    data_deallocate(&d13);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d14);
+    data_deallocate(&d14);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d15);
+    data_deallocate(&d15);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d16);
+    data_deallocate(&d16);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d17);
+    data_deallocate(&d17);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_4.bias_activation_backward(&lenet->H2_4, &d4);
+    data_deallocate(&d4);
+    d1 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_1.output, &d0, false);
+    d2 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_2.output, &d0, false);
+    d3 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_4.output, &d0, false);
+    d4 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_5.output, &d0, false);
+    d13 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_7.output, &d0, false);
+    d14 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_8.output, &d0, false);
+    d15 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_10.output, &d0, false);
+    d16 = lenet->H2_4.kernel_backward(&lenet->H2_4, &lenet->H1_11.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d2);
+    data_deallocate(&d2);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d3);
+    data_deallocate(&d3);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d4);
+    data_deallocate(&d4);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d13);
+    data_deallocate(&d13);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d14);
+    data_deallocate(&d14);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d15);
+    data_deallocate(&d15);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d16);
+    data_deallocate(&d16);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_5.bias_activation_backward(&lenet->H2_5, &d5);
+    data_deallocate(&d5);
+    d1 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_1.output, &d0, false);
+    d2 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_4.output, &d0, false);
+    d4 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_7.output, &d0, false);
+    d13 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_9.output, &d0, false);
+    d14 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_10.output, &d0, false);
+    d15 = lenet->H2_5.kernel_backward(&lenet->H2_5, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d3);
+    data_deallocate(&d3);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d5);
+    data_deallocate(&d5);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d13);
+    data_deallocate(&d13);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d14);
+    data_deallocate(&d14);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d15);
+    data_deallocate(&d15);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_6.bias_activation_backward(&lenet->H2_6, &d6);
+    data_deallocate(&d6);
+    d1 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_1.output, &d0, false);
+    d2 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_4.output, &d0, false);
+    d4 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_7.output, &d0, false);
+    d6 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_9.output, &d0, false);
+    d13 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_10.output, &d0, false);
+    d14 = lenet->H2_6.kernel_backward(&lenet->H2_6, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d3);
+    data_deallocate(&d3);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d5);
+    data_deallocate(&d5);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d6);
+    data_deallocate(&d6);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d13);
+    data_deallocate(&d13);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d14);
+    data_deallocate(&d14);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_7.bias_activation_backward(&lenet->H2_7, &d7);
+    data_deallocate(&d7);
+    d1 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_1.output, &d0, false);
+    d2 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_4.output, &d0, false);
+    d4 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_7.output, &d0, false);
+    d6 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_9.output, &d0, false);
+    d7 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_10.output, &d0, false);
+    d13 = lenet->H2_7.kernel_backward(&lenet->H2_7, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d3);
+    data_deallocate(&d3);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d5);
+    data_deallocate(&d5);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d6);
+    data_deallocate(&d6);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d7);
+    data_deallocate(&d7);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d13);
+    data_deallocate(&d13);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_8.bias_activation_backward(&lenet->H2_8, &d8);
+    data_deallocate(&d8);
+    d1 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_1.output, &d0, false);
+    d2 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_4.output, &d0, false);
+    d4 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_7.output, &d0, false);
+    d6 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_9.output, &d0, false);
+    d7 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_10.output, &d0, false);
+    d8 = lenet->H2_8.kernel_backward(&lenet->H2_8, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_1.bias_activation_backward(&lenet->H1_1, &d1);
+    data_deallocate(&d1);
+    lenet->H1_1.kernel_backward(&lenet->H1_1, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_4.bias_activation_backward(&lenet->H1_4, &d3);
+    data_deallocate(&d3);
+    lenet->H1_4.kernel_backward(&lenet->H1_4, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_7.bias_activation_backward(&lenet->H1_7, &d5);
+    data_deallocate(&d5);
+    lenet->H1_7.kernel_backward(&lenet->H1_7, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d6);
+    data_deallocate(&d6);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_10.bias_activation_backward(&lenet->H1_10, &d7);
+    data_deallocate(&d7);
+    lenet->H1_10.kernel_backward(&lenet->H1_10, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d8);
+    data_deallocate(&d8);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_9.bias_activation_backward(&lenet->H2_9, &d9);
+    data_deallocate(&d9);
+    d1 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_2.output, &d0, false);
+    d2 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_5.output, &d0, false);
+    d4 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_8.output, &d0, false);
+    d6 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_9.output, &d0, false);
+    d7 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_11.output, &d0, false);
+    d8 = lenet->H2_9.kernel_backward(&lenet->H2_9, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d1);
+    data_deallocate(&d1);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d3);
+    data_deallocate(&d3);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d5);
+    data_deallocate(&d5);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d6);
+    data_deallocate(&d6);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d7);
+    data_deallocate(&d7);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d8);
+    data_deallocate(&d8);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_10.bias_activation_backward(&lenet->H2_10, &d10);
+    data_deallocate(&d10);
+    d1 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_2.output, &d0, false);
+    d2 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_5.output, &d0, false);
+    d4 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_8.output, &d0, false);
+    d6 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_9.output, &d0, false);
+    d7 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_11.output, &d0, false);
+    d8 = lenet->H2_10.kernel_backward(&lenet->H2_10, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d1);
+    data_deallocate(&d1);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d3);
+    data_deallocate(&d3);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d5);
+    data_deallocate(&d5);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d6);
+    data_deallocate(&d6);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d7);
+    data_deallocate(&d7);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d8);
+    data_deallocate(&d8);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_11.bias_activation_backward(&lenet->H2_11, &d11);
+    data_deallocate(&d11);
+    d1 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_2.output, &d0, false);
+    d2 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_5.output, &d0, false);
+    d4 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_8.output, &d0, false);
+    d6 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_9.output, &d0, false);
+    d7 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_11.output, &d0, false);
+    d8 = lenet->H2_11.kernel_backward(&lenet->H2_11, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d1);
+    data_deallocate(&d1);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d3);
+    data_deallocate(&d3);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d5);
+    data_deallocate(&d5);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d6);
+    data_deallocate(&d6);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d7);
+    data_deallocate(&d7);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d8);
+    data_deallocate(&d8);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H2_12.bias_activation_backward(&lenet->H2_12, &d12);
+    data_deallocate(&d12);
+    d1 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_2.output, &d0, false);
+    d2 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_3.output, &d0, false);
+    d3 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_5.output, &d0, false);
+    d4 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_6.output, &d0, false);
+    d5 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_8.output, &d0, false);
+    d6 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_9.output, &d0, false);
+    d7 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_11.output, &d0, false);
+    d8 = lenet->H2_12.kernel_backward(&lenet->H2_12, &lenet->H1_12.output, &d0, false);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_2.bias_activation_backward(&lenet->H1_2, &d1);
+    data_deallocate(&d1);
+    lenet->H1_2.kernel_backward(&lenet->H1_2, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_3.bias_activation_backward(&lenet->H1_3, &d2);
+    data_deallocate(&d2);
+    lenet->H1_3.kernel_backward(&lenet->H1_3, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_5.bias_activation_backward(&lenet->H1_5, &d3);
+    data_deallocate(&d3);
+    lenet->H1_5.kernel_backward(&lenet->H1_5, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_6.bias_activation_backward(&lenet->H1_6, &d4);
+    data_deallocate(&d4);
+    lenet->H1_6.kernel_backward(&lenet->H1_6, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_8.bias_activation_backward(&lenet->H1_8, &d5);
+    data_deallocate(&d5);
+    lenet->H1_8.kernel_backward(&lenet->H1_8, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_9.bias_activation_backward(&lenet->H1_9, &d6);
+    data_deallocate(&d6);
+    lenet->H1_9.kernel_backward(&lenet->H1_9, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_11.bias_activation_backward(&lenet->H1_11, &d7);
+    data_deallocate(&d7);
+    lenet->H1_11.kernel_backward(&lenet->H1_11, input, &d0, true);
+    data_deallocate(&d0);
+
+    d0 = lenet->H1_12.bias_activation_backward(&lenet->H1_12, &d8);
+    data_deallocate(&d8);
+    lenet->H1_12.kernel_backward(&lenet->H1_12, input, &d0, true);
+    data_deallocate(&d0);
+
+    lenet->FC2.update(&lenet->FC2);
+    lenet->FC1.update(&lenet->FC1);
+    lenet->H2_12.update(&lenet->H2_12);
+    lenet->H2_11.update(&lenet->H2_11);
+    lenet->H2_10.update(&lenet->H2_10);
+    lenet->H2_9.update(&lenet->H2_9);
+    lenet->H2_8.update(&lenet->H2_8);
+    lenet->H2_7.update(&lenet->H2_7);
+    lenet->H2_6.update(&lenet->H2_6);
+    lenet->H2_5.update(&lenet->H2_5);
+    lenet->H2_4.update(&lenet->H2_4);
+    lenet->H2_3.update(&lenet->H2_3);
+    lenet->H2_2.update(&lenet->H2_2);
+    lenet->H2_1.update(&lenet->H2_1);
+    lenet->H1_12.update(&lenet->H1_12);
+    lenet->H1_11.update(&lenet->H1_11);
+    lenet->H1_10.update(&lenet->H1_10);
+    lenet->H1_9.update(&lenet->H1_9);
+    lenet->H1_8.update(&lenet->H1_8);
+    lenet->H1_7.update(&lenet->H1_7);
+    lenet->H1_6.update(&lenet->H1_6);
+    lenet->H1_5.update(&lenet->H1_5);
+    lenet->H1_4.update(&lenet->H1_4);
+    lenet->H1_3.update(&lenet->H1_3);
+    lenet->H1_2.update(&lenet->H1_2);
+    lenet->H1_1.update(&lenet->H1_1);
 }
 
 LeNet LeNetInit() {
@@ -867,17 +1598,25 @@ int main(int argc, char *argv[]) {
     for (int epoch = 0; epoch < 23; epoch++) {
         printf("Epoch: ");
         printf("%d\n", epoch);
+        float total_loss = 0;
         for (int img = 0; img < train_samples; img++) {
             int index = indices.train_set[img];
             input.data = images.data_float + index * images.size;
             Data output = lenet.forward(&lenet, &input);
             Data target = mnist_get_target_vector(labels.data[index]);
+            if (img % 1000 == 0) {
+                printf("/////\n");
+                for (int i = 0; i < 10; i++) printf("%f\n", output.data[i]);
+                for (int i = 0; i < 10; i++) printf("%f\n", target.data[i]);
+            }
             float loss = MSEForward(&output, &target);
-            printf("Loss [MSE]: %f\n", loss);
-            lenet.backward(&lenet, MSEBackward(&output, &target));
+            if (img % 1000 == 0) printf("Loss [MSE]: %f\n", loss);
+            total_loss += loss;
+            lenet.backward(&lenet, &input, MSEBackward(&output, &target));
             data_deallocate(&output);
             data_deallocate(&target);
         }
+        printf("\nAvg loss [MSE]: %f\n\n", total_loss / (float)train_samples);
     }
     return 0;
 }
