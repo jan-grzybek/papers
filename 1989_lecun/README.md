@@ -8,3 +8,17 @@ C implementation of the architecture described in the paper. Converges well, tho
 - difference in dataset: original implementation used MNIST predecessor of smaller size (7,291 : 2,007 train/test split) that I couldn't track down (MNIST has 60,000 training cases and 10,000 test cases), instead subset of MNIST is used matching original training / test data split. I suspect images are of better quality. They were resized from 28x28 pixels to 16x16 pixels accepted by the described architecture.
 
 ![Original LeNet?](lenet.png)
+
+## Running
+```
+wget http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz
+wget http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz
+gzip -dv train-images-idx3-ubyte.gz
+gzip -dv train-labels-idx1-ubyte.gz
+
+cmake .
+make -j
+./lecun train-images-idx3-ubyte train-labels-idx1-ubyte
+```
+```
+```
