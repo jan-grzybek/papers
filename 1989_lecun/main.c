@@ -1811,7 +1811,6 @@ void train(Images *images, Labels *labels, Indices *indices, int train_samples, 
     }
     fclose(file);
     lenet.destroy(&lenet);
-    data_deallocate(&input);
 }
 
 int main(int argc, char *argv[]) {
