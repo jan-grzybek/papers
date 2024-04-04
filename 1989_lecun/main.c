@@ -3,10 +3,11 @@
 #include <string.h>
 #include <stdarg.h>
 #include <math.h>
+#include <time.h>
 #include <stdbool.h>
 
-const bool do_gradient_check = false;
-const float learning_rate = (float)3e-2, eps = (float)1e-4;
+#define GRADIENT_CHECK 0
+float learning_rate = (float)1e-1, eps = (float)1e-4;
 const int example_idx = 47;
 
 // turns out MNIST is big-endian
@@ -367,6 +368,7 @@ typedef struct Conv2D {
     Data (*bias_activation_backward)(struct Conv2D*, Data*);
     void (*reset_output)(struct Conv2D*, Data*);
     void (*update)(struct Conv2D*);
+    void (*destroy)(struct Conv2D*);
 } Conv2D;
 
 void fill_array_random_floats(float *array, int n, double range_start, double range_end) {
@@ -492,10 +494,19 @@ void Conv2DUpdate(Conv2D *layer) {
     fill_array_zeros(layer->bias_grad, layer->bias_size);
 }
 
+void Conv2DDestroy(Conv2D *layer) {
+    data_deallocate(&layer->output);
+    free(layer->weights);
+    free(layer->weights_grad);
+    free(layer->bias);
+    free(layer->bias_grad);
+}
+
 Conv2D Conv2DInit(int stride, bool padding, int height, int width, int total_kernels) {
     if (stride < 1) error_out("Conv2D stride has to be >= 1");
     if (height < 1) error_out("kernel's height has to be >= 1");
     if (width < 1) error_out("kernel's width has to be >= 1");
+
     Conv2D conv;
     conv.kernel_forward = Conv2DKernelForward;
     conv.kernel_backward = Conv2DKernelBackward;
@@ -503,6 +514,8 @@ Conv2D Conv2DInit(int stride, bool padding, int height, int width, int total_ker
     conv.bias_activation_backward = Conv2DBiasActivationBackward;
     conv.reset_output = Conv2DResetOutput;
     conv.update = Conv2DUpdate;
+    conv.destroy = Conv2DDestroy;
+
     conv.stride = stride;
     conv.padding = padding;
     conv.height = height;
@@ -518,7 +531,6 @@ Conv2D Conv2DInit(int stride, bool padding, int height, int width, int total_ker
     conv.bias = NULL;
     conv.bias_grad = NULL;
     conv.output.data = NULL;
-    // for (int i =0; i < 25; i++) conv.weights[i] = i % 2;
     return conv;
 }
 
@@ -532,6 +544,7 @@ typedef struct FC {
     Data (*bias_activation_backward)(struct FC*, Data*);
     void (*reset_output)(struct FC*);
     void (*update)(struct FC*);
+    void (*destroy)(struct FC*);
 } FC;
 
 void FCResetOutput(FC *layer) {
@@ -595,6 +608,14 @@ Data FCBiasActivationBackward(FC *layer, Data *upper_derivative) {
     return lower_derivative;
 }
 
+void FCDestroy(FC *layer) {
+    data_deallocate(&layer->output);
+    free(layer->weights);
+    free(layer->weights_grad);
+    free(layer->bias);
+    free(layer->bias_grad);
+}
+
 FC FCInit(int input_units, int output_units) {
     if (input_units < 1) error_out("FC must have >= 1 input units");
     if (output_units < 1) error_out("FC must have >= 1 output units");
@@ -605,6 +626,7 @@ FC FCInit(int input_units, int output_units) {
     fc.bias_activation_backward = FCBiasActivationBackward;
     fc.reset_output = FCResetOutput;
     fc.update = FCUpdate;
+    fc.destroy = FCDestroy;
 
     int fc_size = input_units * output_units;
     fc.weights_size = fc_size;
@@ -658,6 +680,7 @@ typedef struct LeNet {
     void (*backward)(struct LeNet*, Data*, Data);
     void (*update)(struct LeNet*);
     void (*grad_check)(struct LeNet*, Data*, Data*);
+    void (*destroy)(struct LeNet*);
 } LeNet;
 
 Data LeNetForward(LeNet *lenet, Data *input) {
@@ -887,6 +910,7 @@ void LeNetUpdate(LeNet *lenet) {
 }
 
 void LeNetBackward(LeNet *lenet, Data *input, Data loss_derivative) {
+    // generated with backprop_helper.py
     Data d0 = lenet->FC2.bias_activation_backward(&lenet->FC2, &loss_derivative);
     data_deallocate(&loss_derivative);
     Data d1 = lenet->FC2.madd_backward(&lenet->FC2, &lenet->FC1.output, &d0);
@@ -1583,6 +1607,35 @@ void LeNetGradCheck(LeNet *lenet, Data *input, Data *target) {
     exit(0);
 }
 
+void LeNetDestroy(LeNet* lenet) {
+    lenet->H1_1.destroy(&lenet->H1_1);
+    lenet->H1_2.destroy(&lenet->H1_2);
+    lenet->H1_3.destroy(&lenet->H1_3);
+    lenet->H1_4.destroy(&lenet->H1_4);
+    lenet->H1_5.destroy(&lenet->H1_5);
+    lenet->H1_6.destroy(&lenet->H1_6);
+    lenet->H1_7.destroy(&lenet->H1_7);
+    lenet->H1_8.destroy(&lenet->H1_8);
+    lenet->H1_9.destroy(&lenet->H1_9);
+    lenet->H1_10.destroy(&lenet->H1_10);
+    lenet->H1_11.destroy(&lenet->H1_11);
+    lenet->H1_12.destroy(&lenet->H1_12);
+    lenet->H2_1.destroy(&lenet->H2_1);
+    lenet->H2_2.destroy(&lenet->H2_2);
+    lenet->H2_3.destroy(&lenet->H2_3);
+    lenet->H2_4.destroy(&lenet->H2_4);
+    lenet->H2_5.destroy(&lenet->H2_5);
+    lenet->H2_6.destroy(&lenet->H2_6);
+    lenet->H2_7.destroy(&lenet->H2_7);
+    lenet->H2_8.destroy(&lenet->H2_8);
+    lenet->H2_9.destroy(&lenet->H2_9);
+    lenet->H2_10.destroy(&lenet->H2_10);
+    lenet->H2_11.destroy(&lenet->H2_11);
+    lenet->H2_12.destroy(&lenet->H2_12);
+    lenet->FC1.destroy(&lenet->FC1);
+    lenet->FC2.destroy(&lenet->FC2);
+}
+
 LeNet LeNetInit() {
     LeNet lenet;
 
@@ -1590,6 +1643,7 @@ LeNet LeNetInit() {
     lenet.backward = LeNetBackward;
     lenet.update = LeNetUpdate;
     lenet.grad_check = LeNetGradCheck;
+    lenet.destroy = LeNetDestroy;
 
     lenet.H1_1 = Conv2DInit(2, true, 5, 5, 1);
     lenet.H1_2 = Conv2DInit(2, true, 5, 5, 1);
@@ -1679,31 +1733,28 @@ void show_kernel(const float *weights, int height, int width, int index) {
     for (int col = 0; col < width+2; col++) print_maybe("# #"); print_maybe("\n");
 }
 
-int main(int argc, char *argv[]) {
-    // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
-    int train_samples = 7291;
-    int test_samples = 2007;
-    Images images = normalize(resize_bilinear(
-            mnist_load_images(argv[1], 2051),
-            16, 16));
-    Labels labels = mnist_load_labels(argv[2], 2049);
-    if (images.count != labels.count) error_out("Number of images and labels not equal!");
-    Indices indices = split_dataset(images.count, train_samples, test_samples);
+void train(Images *images, Labels *labels, Indices *indices, int train_samples, int test_samples) {
+    printf("\nLearning rate: %f\n", learning_rate);
+    FILE *file = fopen("log.csv", "a");
+    if (file == NULL) error_out("Can't open file for writing.");
+    srand(44);
     LeNet lenet = LeNetInit();
     Data input;
-    input.dims = (int[2]){images.height, images.width};
-    for (int epoch = 0; epoch < 23; epoch++) {
+    input.dims = (int[2]){images->height, images->width};
+    for (int epoch = 1; epoch <= 30; epoch++) {
         printf("\nEpoch: ");
         printf("%d\n", epoch);
         for (int img = 0; img < train_samples; img++) {
-            int index = indices.train_set[img];
-            input.data = images.data_float + index * images.size;
+            int index = indices->train_set[img];
+            input.data = images->data_float + index * images->size;
             Data output = lenet.forward(&lenet, &input);
-            Data target = mnist_get_target_vector(labels.data[index]);
+            Data target = mnist_get_target_vector(labels->data[index]);
             float loss = MSEForward(&output, &target);
             if (img % 1000 == 0) print_maybe("Loss [MSE]: %f\n", loss);
             lenet.backward(&lenet, &input, MSEBackward(&output, &target));
-            if (do_gradient_check && loss < 0.1) lenet.grad_check(&lenet, &input, &target);
+            #if GRADIENT_CHECK == 1
+            if (loss < 0.1) lenet.grad_check(&lenet, &input, &target);
+            #endif
             lenet.update(&lenet);
             data_deallocate(&output);
             data_deallocate(&target);
@@ -1712,33 +1763,36 @@ int main(int argc, char *argv[]) {
         float total_loss = 0;
         int misclassified_count = 0;
         for (int img = 0; img < train_samples; img++) {
-            int index = indices.train_set[img];
-            input.data = images.data_float + index * images.size;
+            int index = indices->train_set[img];
+            input.data = images->data_float + index * images->size;
             Data output = lenet.forward(&lenet, &input);
-            Data target = mnist_get_target_vector(labels.data[index]);
-            misclassified_count += get_prediction(&output) != labels.data[index];
+            Data target = mnist_get_target_vector(labels->data[index]);
+            misclassified_count += get_prediction(&output) != labels->data[index];
             total_loss += MSEForward(&output, &target);
             data_deallocate(&output);
             data_deallocate(&target);
         }
-        printf("\nAvg loss training set [MSE]: %f", total_loss / (float)train_samples);
-        printf("\nMisclassified patterns training set: %.2f%%\n",
-               (float)misclassified_count * 100 / (float)train_samples);
+        float training_loss = total_loss / (float)train_samples;
+        float training_error = (float)misclassified_count * 100 / (float)train_samples;
+        printf("\nAvg loss training set [MSE]: %f", training_loss);
+        printf("\nMisclassified patterns training set: %.2f%%\n", training_error);
 
         total_loss = 0;
         misclassified_count = 0;
         for (int img = 0; img < test_samples; img++) {
-            int index = indices.test_set[img];
-            input.data = images.data_float + index * images.size;
+            int index = indices->test_set[img];
+            input.data = images->data_float + index * images->size;
             Data output = lenet.forward(&lenet, &input);
-            Data target = mnist_get_target_vector(labels.data[index]);
-            misclassified_count += get_prediction(&output) != labels.data[index];
+            Data target = mnist_get_target_vector(labels->data[index]);
+            misclassified_count += get_prediction(&output) != labels->data[index];
             total_loss += MSEForward(&output, &target);
             data_deallocate(&output);
             data_deallocate(&target);
         }
-        printf("\nAvg loss test set [MSE]: %f", total_loss / (float)train_samples);
-        printf("\nMisclassified patterns test set: %.2f%%\n", (float)misclassified_count * 100 / (float)train_samples);
+        float test_loss = total_loss / (float)test_samples;
+        float test_error = (float)misclassified_count * 100 / (float)test_samples;
+        printf("\nAvg loss test set [MSE]: %f", test_loss);
+        printf("\nMisclassified patterns test set: %.2f%%\n", test_error);
 
         show_kernel(lenet.H1_1.weights, lenet.H1_1.height, lenet.H1_1.width, 1);
         show_kernel(lenet.H1_2.weights, lenet.H1_2.height, lenet.H1_2.width, 2);
@@ -1752,6 +1806,32 @@ int main(int argc, char *argv[]) {
         show_kernel(lenet.H1_10.weights, lenet.H1_10.height, lenet.H1_10.width, 10);
         show_kernel(lenet.H1_11.weights, lenet.H1_11.height, lenet.H1_11.width, 11);
         show_kernel(lenet.H1_12.weights, lenet.H1_12.height, lenet.H1_12.width, 12);
+
+        fprintf(file, "%f,%d,%f,%f,%f,%f\n", learning_rate, epoch, training_loss, training_error, test_loss, test_error);
+    }
+    fclose(file);
+    lenet.destroy(&lenet);
+    data_deallocate(&input);
+}
+
+int main(int argc, char *argv[]) {
+    // you can obtain MNIST here http://yann.lecun.com/exdb/mnist/
+    srand(44);
+    int train_samples = 7291;
+    int test_samples = 2007;
+    Images images = normalize(resize_bilinear(
+            mnist_load_images(argv[1], 2051),
+            16, 16));
+    Labels labels = mnist_load_labels(argv[2], 2049);
+    if (images.count != labels.count) error_out("Number of images and labels not equal!");
+    Indices indices = split_dataset(images.count, train_samples, test_samples);
+    FILE *file = fopen("log.csv", "w");
+    if (file == NULL) error_out("Can't open file for writing.");
+    fprintf(file, "learning_rate,epoch,training_loss,training_error,test_loss,test_error\n");
+    fclose(file);
+    while (learning_rate > 5e-5) {
+        train(&images, &labels, &indices, train_samples, test_samples);
+        learning_rate *= (float)0.5;
     }
     return 0;
 }

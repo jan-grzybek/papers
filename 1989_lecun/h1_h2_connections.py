@@ -1,3 +1,5 @@
+# generate connections from H1 to H2 so that each H1 layer feeds equal number of H2 layers
+
 x = {i: 0 for i in range(12)}
 links = {i: [] for i in range(12)}
 
