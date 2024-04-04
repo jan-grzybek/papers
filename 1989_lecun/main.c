@@ -8,7 +8,7 @@
 
 #define GRADIENT_CHECK 0
 float learning_rate = (float)1e-1, eps = (float)1e-4;
-const int example_idx = 47;
+const int example_idx = 47, epochs = 100;
 
 // turns out MNIST is big-endian
 // https://stackoverflow.com/questions/8286668/how-to-read-mnist-data-in-c
@@ -1733,7 +1733,7 @@ void show_kernel(const float *weights, int height, int width, int index) {
     for (int col = 0; col < width+2; col++) print_maybe("# #"); print_maybe("\n");
 }
 
-void train(Images *images, Labels *labels, Indices *indices, int train_samples, int test_samples) {
+void train_lenet(Images *images, Labels *labels, Indices *indices, int train_samples, int test_samples) {
     printf("\nLearning rate: %f\n", learning_rate);
     FILE *file = fopen("log.csv", "a");
     if (file == NULL) error_out("Can't open file for writing.");
@@ -1741,7 +1741,7 @@ void train(Images *images, Labels *labels, Indices *indices, int train_samples, 
     LeNet lenet = LeNetInit();
     Data input;
     input.dims = (int[2]){images->height, images->width};
-    for (int epoch = 1; epoch <= 30; epoch++) {
+    for (int epoch = 1; epoch <= epochs; epoch++) {
         printf("\nEpoch: ");
         printf("%d\n", epoch);
         for (int img = 0; img < train_samples; img++) {
@@ -1824,12 +1824,13 @@ int main(int argc, char *argv[]) {
     Labels labels = mnist_load_labels(argv[2], 2049);
     if (images.count != labels.count) error_out("Number of images and labels not equal!");
     Indices indices = split_dataset(images.count, train_samples, test_samples);
+
     FILE *file = fopen("log.csv", "w");
     if (file == NULL) error_out("Can't open file for writing.");
     fprintf(file, "learning_rate,epoch,training_loss,training_error,test_loss,test_error\n");
     fclose(file);
     while (learning_rate > 5e-5) {
-        train(&images, &labels, &indices, train_samples, test_samples);
+        train_lenet(&images, &labels, &indices, train_samples, test_samples);
         learning_rate *= (float)0.5;
     }
     return 0;
