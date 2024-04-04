@@ -36,8 +36,8 @@ bool is_verbose() {
 }
 
 void print_maybe(const char *format, ...) {
-    static char verbose = -1;
-    if (verbose == -1) {
+    static char verbose = 2;
+    if (verbose == 2) {
         if (is_verbose()) verbose = 1;
         else verbose = 0;
     }
